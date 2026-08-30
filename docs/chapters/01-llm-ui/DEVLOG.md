@@ -79,3 +79,63 @@
 2. 新建只允许在适配器目录导入的 Anthropic 客户端。
 3. 用假 SDK 流先测试转换，再使用 DeepSeek Key 做一次人工集成测试。
 4. 实现内部/API 两层消息和 `ConversationManager.to_api_format()`。
+
+## 2026-08-30：Codex 风格界面修订
+
+### 改动
+
+- 删除深色网格、轨道装饰和独立大仪表栏。
+- 改为浅灰项目侧栏、白色对话工作区、紧凑标题栏和底部悬浮输入框。
+- 模型、输入/输出 Token 与耗时收进输入框工具栏，减少视觉噪声。
+- 保留流式纯文本、完成后 Markdown、Bridge 状态和键盘发送行为。
+- 移除不再使用的 Newsreader 字体导入与依赖。
+
+### 验证
+
+- Renderer 浏览器冒烟通过并生成新版截图。
+- 真实 Electron 端到端与关闭窗口回归通过。
+- TypeScript 类型检查与本地单元测试通过。
+- 本次改动未提交，等待用户验收。
+
+## 2026-08-30：一条消息链路教学重写
+
+### 原问题
+
+- 文档只说明 `LLMClient`、流式事件和 reducer 的概念，没有把它们串成一次真实请求。
+- 没有解释 `request_id`、`message_id`、`sequence` 的区别。
+- 没有告诉零基础读者按什么顺序阅读 Electron、Python 和 React 文件。
+
+### 本次改动
+
+- 以用户输入“你好”为固定例子，分 26 步走完 Renderer → Preload → Main → Python → FakeLLM → Renderer。
+- 给出 `chat.send`、`stream_text`、`usage`、`turn_complete` 的具体信封示例。
+- 解释 React state/reducer/action、异步、LLM、流式、Markdown 和 Token。
+- 区分 LLM 领域事件、Bridge 信封和 React action 三层事件。
+- 增加真实/模拟能力边界、排错入口、文件地图、练习和带答案自测题。
+
+### 验证
+
+- 按消息发送与返回方向逐项对照当前源码。
+- 确认文档明确写出 ConversationManager、真实 DeepSeek 和准确 Token 尚未实现。
+- 本次只修改文档和协作规范，没有修改运行代码，也没有提交 Git。
+
+## 2026-08-30：`chatReducer` 与界面源码教学注释补全
+
+### 原问题
+
+- `chatReducer` 没有解释 reducer 是什么，初学者容易把它误认为 API 请求函数或界面渲染函数。
+- 每个 `case` 只写了状态更新代码，没有交代由哪个 Bridge 事件触发、会改变哪些字段、为什么使用不可变更新。
+- `App.tsx` 中 Effect、事件订阅、派发 action、流式文本和完成后 Markdown 的关系不够直观。
+
+### 本次改动
+
+- 在 `state.ts` 文件顶部解释 state、action、dispatch 与 reducer 的关系。
+- 为六种 action 的每个 `case` 写出触发时机、旧状态到新状态的变化和忽略过期事件的原因。
+- 为 `App.tsx` 的组件、Effect、事件转换、发送函数和主要 JSX 区域增加中文教学注释。
+- 为 FakeLLM 与 LLM 抽象补充流事件、分块、用量估算和供应商隔离说明。
+
+### 验证
+
+- reducer 与界面行为保持不变，注释内容逐项对照当前事件名称与字段。
+- 完整自动化结果记录在本轮最终报告中。
+- 本次改动不提交 Git，等待用户先手动阅读和测试。

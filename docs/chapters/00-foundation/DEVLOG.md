@@ -65,3 +65,64 @@
 - 分支：`main`
 - 功能提交：`676759f feat(foundation): 打通 FakeLLM 桌面流式链路`
 - 文档提交：由本次文档提交记录。
+
+## 2026-08-30：退出错误修复
+
+### 现象与原因
+
+- 现象：手动关闭窗口时偶发 “A JavaScript error occurred in the main process”。
+- 原因：窗口已销毁后，Python Bridge 的退出状态仍通过旧的 `webContents` 发送；同时 stdin 与子进程关闭存在竞态。
+
+### 修复
+
+- 窗口 `closed` 时清空全局引用。
+- 发送 IPC 前同时检查 BrowserWindow 与 webContents 是否已经销毁。
+- Bridge 停止时保护 stdin error、重复 kill 和进程已自行退出的情况。
+- 真实 Electron 测试改为主动关闭窗口并扫描主进程 stderr。
+
+### 验证
+
+- `npm run test:electron` 通过。
+- 主进程 stderr 未出现 JavaScript Error、`Object has been destroyed` 或未处理 Promise。
+- 本次改动未提交，等待用户验收。
+
+## 2026-08-30：零基础教学重写
+
+### 原问题
+
+- 文档直接使用进程、NDJSON、stdin/stdout、Preload 等术语，没有建立前置心智模型。
+- 只列入口函数，没有解释从 `npm run dev` 到 `bridge.ready` 的实际顺序。
+- 没有推荐阅读顺序，读者不知道先看哪个文件。
+
+### 本次改动
+
+- 增加程序/进程、Electron 三层、标准通道、JSON/NDJSON 和 Bridge 的零基础解释。
+- 增加三轮推荐阅读顺序。
+- 用 12 个步骤追踪启动握手，并给出 hello/ready 的具体 JSON。
+- 增加退出链路、文件地图、跟做练习、常见问题和带答案自测题。
+
+### 验证
+
+- 对照当前 Main、BridgeServer、Envelope、BridgeApplication 与 Preload 源码复核链路。
+- 本次只修改文档和协作规范，没有修改运行代码，也没有提交 Git。
+
+## 2026-08-30：源码教学注释补全
+
+### 原问题
+
+- 文件之间虽然已经能运行，但初学者只看源码时不知道当前文件位于哪一段链路。
+- Electron 主进程、Python 子进程和 NDJSON 解析函数缺少“谁调用、输入输出、为什么存在”的就近说明。
+- 异常处理看起来像很多零散判断，没有解释它们是在防止退出竞态和坏消息拖垮进程。
+
+### 本次改动
+
+- 为 Main、Preload、PythonBridge 和共享协议信封补充文件级与函数级中文注释。
+- 为 BridgeServer、BridgeApplication、Envelope 及领域消息类型补充调用关系、数据形状和降级策略说明。
+- 把“每个源码文件都应可作为零基础教材阅读”的规则写入项目协作约定与开发指南。
+- 本地测试文件也补充测试目的、模拟边界和断言原因，测试文件仍由 `.gitignore` 排除。
+
+### 验证
+
+- 注释只解释既有行为，没有改变进程协议或运行逻辑。
+- 完整自动化结果记录在本轮最终报告中。
+- 本次改动不提交 Git，等待用户先手动阅读和测试。

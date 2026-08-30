@@ -15,6 +15,13 @@ out/
 coverage/
 artifacts/
 
+# 本地自动化测试（保留在开发机，不提交仓库）
+tests/
+test_*.py
+*_test.py
+*.test.*
+*.spec.*
+
 # 本地配置与密钥
 .env
 .env.*

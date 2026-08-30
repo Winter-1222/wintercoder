@@ -46,7 +46,7 @@ npm install
   1. 关闭 Electron 窗口。
   2. 在任务管理器或 PowerShell 进程列表中搜索本项目的 `jixue.bridge`。
 - 预期结果：Electron 和对应 Python Bridge 均退出，没有项目进程残留。
-- 实际结果：真实 Electron 自动化测试退出码为 0，子进程随应用关闭。
+- 实际结果：真实 Electron 自动化测试退出码为 0，子进程随应用关闭；主进程 stderr 未出现 JavaScript Error 或已销毁对象错误。
 - 结论：通过。
 - 截图位置：`artifacts/ui/electron-smoke.png`，该目录已忽略，不提交仓库。
 
@@ -63,6 +63,7 @@ npm install
 | Bridge 一直离线 | `mycoder` 不存在或 Conda 不在 PATH | 在同一终端运行 Conda 版本命令 | 修复 Conda 环境或 PATH |
 | stdout JSON 解析失败 | Python 日志写入 stdout | 单独启动 Bridge 检查每一行 | 日志改写 stderr |
 | Electron 安装不正确 | postinstall 下载未完成 | 检查 `node_modules/electron/dist/electron.exe` | 重新执行 Electron 安装脚本 |
+| 退出时弹 JavaScript 错误 | Bridge 退出事件向已销毁窗口发送状态 | 搜索主进程 stderr 中的 `Object has been destroyed` | 发送前检查窗口状态，并保护 stdin 关闭竞态 |
 | PowerShell 脚本乱码 | Windows PowerShell 5 误判 UTF-8 | 单独解析 `.ps1` | 脚本保持 ASCII 或使用合适编码 |
 
 ## 回归结论

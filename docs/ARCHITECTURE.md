@@ -33,9 +33,9 @@ flowchart LR
 
 选择 NDJSON 标准输入输出桥接，而不是第一周引入本地 HTTP 服务，原因是依赖更少、流式事件天然适配、端口管理更简单。Python 的标准输出只能写协议事件，普通日志一律写标准错误。
 
-## 3. 目录规划
+## 3. 当前目录
 
-目录按能力增长，不在第一天创建全部空文件：
+目录按能力增长，不提前创建未来章节的空包。下面只展示当前已存在的主要边界：
 
 ```text
 myAgent/
@@ -44,26 +44,21 @@ myAgent/
 │     └─ src/
 │        ├─ main/              # 窗口、Python 子进程、IPC
 │        ├─ preload/           # contextBridge 白名单
-│        └─ renderer/          # 对话 UI
+│        ├─ renderer/          # 对话 UI
+│        └─ shared/            # Main、Preload、Renderer 共用协议
 ├─ src/jixue/
-│  ├─ domain/                  # 消息、事件、配置等纯领域类型
-│  ├─ llm/                     # LLM 接口与 Anthropic 适配器
-│  ├─ conversation/            # 对话历史与 API 格式转换
-│  ├─ tools/                   # 工具、注册中心、执行器
-│  ├─ agent/                   # Agent Loop、状态机、取消
-│  ├─ prompt/                  # System Prompt 与上下文组装
-│  ├─ permissions/             # 五层权限防御
-│  ├─ mcp/                     # MCP transport、连接与包装器
-│  ├─ context/                 # 大结果卸载与压缩
-│  ├─ memory/                  # 会话、项目指令、自动记忆
-│  ├─ subagents/               # 第九章的受控子 Agent
+│  ├─ domain/                  # 消息与事件等纯领域类型
+│  ├─ llm/                     # LLM 接口与 FakeLLM
 │  └─ bridge/                  # Electron 与 Python 的 NDJSON 协议
-├─ tests/                      # Python 自动化测试
+├─ tests/                      # 本地自动化测试，不加入 Git
 ├─ docs/                       # 设计、教学、日志、手测记录
 ├─ config/                     # 可提交的示例配置，不含密钥
+├─ scripts/                    # 本地开发命令入口
 ├─ pyproject.toml
 └─ README.md
 ```
+
+每个现有目录和文件的逐项说明见 [目录与文件职责](PROJECT_STRUCTURE.md)。未来的 `conversation/`、`tools/`、`agent/` 等目录只在对应章节开始时创建，并在该文档中同步登记。
 
 ## 4. LLM 边界
 
