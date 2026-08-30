@@ -2,7 +2,9 @@
 
 霁雪是一个以教学和可复盘开发为目标的轻量 Agent Harness。名字取自“雪后初晴”：内核保持清晰，外部模型、工具和界面都通过边界明确的适配器接入。
 
-当前阶段只完成总体设计，尚未开始第一章代码。
+当前已完成工程基线和第一章的第一小步：无需 API Key 的 `FakeLLM` 可以经过 Python NDJSON Bridge，把流式事件送到 Electron 界面。界面会在流式阶段显示原始文本，收到完成事件后再渲染 Markdown，并展示模型名、Token 和耗时。
+
+真实 DeepSeek 适配器、配置加载、对话管理器和模型切换仍是第一章后续内容；现在的版本不冒充完整第一章。
 
 ## 开发基线
 
@@ -18,5 +20,27 @@
 - [总体开发路线](docs/ROADMAP.md)
 - [总体架构](docs/ARCHITECTURE.md)
 - [开发与复盘约定](docs/DEVELOPMENT_GUIDE.md)
+- [第 0 章：工程基线](docs/chapters/00-foundation/README.md)
+- [第 1 章：FakeLLM 流式界面](docs/chapters/01-llm-ui/README.md)
 
-每章开始时，从 `docs/templates/` 复制教学、开发日志和手动测试模板到对应章节目录。
+## 首次运行
+
+```powershell
+conda run --no-capture-output -n mycoder python -m pip install --index-url https://pypi.org/simple -e ".[dev]"
+npm install
+npm run dev
+```
+
+打开窗口并等到右上角出现“FakeLLM / Bridge 在线”，即可发送消息。当前链路只使用确定性的 FakeLLM，不访问网络，也不会产生模型费用。
+
+## 验证命令
+
+```powershell
+npm run test:all
+npm run typecheck
+conda run --no-capture-output -n mycoder ruff check .
+conda run --no-capture-output -n mycoder mypy src
+npm run test:electron
+```
+
+`test:electron` 会构建并短暂启动一个真实 Electron 窗口，自动发送消息后关闭。每章仍会保留独立的教学、开发日志和手动测试记录，便于日后复盘。
