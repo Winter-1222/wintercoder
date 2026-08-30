@@ -4,9 +4,9 @@
 
 所有章节教程默认面向几乎零基础的读者：先解释术语和推荐阅读顺序，再用一条真实运行链路把目录、文件和函数串起来，不要求读者预先掌握 Electron、React、Python 异步或 LLM SDK。
 
-当前已完成工程基线和第一章的第一小步：无需 API Key 的 `FakeLLM` 可以经过 Python NDJSON Bridge，把流式事件送到 Electron 界面。界面会在流式阶段显示原始文本，收到完成事件后再渲染 Markdown，并展示模型名、Token 和耗时。
+当前已完成工程基线和第一章前两个小步：无需 API Key 的 `FakeLLM` 可以经过 Python NDJSON Bridge，把流式事件送到 Electron 界面；模型目录加载器可以读取默认 YAML、本地覆盖和环境变量，并生成严格的四字段 `LLMConfig`。界面会在流式阶段显示原始文本，收到完成事件后再渲染 Markdown，并展示模型名、Token 和耗时。
 
-真实 DeepSeek 适配器、配置加载、对话管理器和模型切换仍是第一章后续内容；现在的版本不冒充完整第一章。
+真实 DeepSeek 适配器、对话管理器和模型切换仍是第一章后续内容；配置已经能独立加载和检查，但还没有接管当前使用 FakeLLM 的聊天链路。
 
 ## 开发基线
 
@@ -35,6 +35,14 @@ npm run dev
 ```
 
 打开窗口并等到右上角出现“FakeLLM / Bridge 在线”，即可发送消息。当前链路只使用确定性的 FakeLLM，不访问网络，也不会产生模型费用。
+
+不启动 UI、只检查三模型配置：
+
+```powershell
+conda run --no-capture-output -n mycoder python -m jixue.llm.config
+```
+
+命令只显示模型名和凭据状态，不会打印 API Key，也不会发起网络请求。
 
 ## 验证命令
 

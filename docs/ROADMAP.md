@@ -4,7 +4,8 @@
 
 - 第 0 步工程基线：已完成并通过真实 Electron 进程回归。
 - 第一章 A 步 FakeLLM 流式界面：已完成。
-- 当前下一步：配置加载与 Anthropic SDK 适配器，然后实现 ConversationManager。
+- 第一章 B 步四字段配置与模型目录加载：已完成，尚未接入聊天链路。
+- 当前下一步：Anthropic SDK 适配器与假 SDK 流转换，然后做真实 DeepSeek 手测。
 - 尚未进入：真实 DeepSeek、多轮历史、工具系统及后续章节。
 
 ## 1. 一周交付目标

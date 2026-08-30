@@ -119,6 +119,7 @@ src/jixue/
 ├─ llm/
 │  ├─ __init__.py
 │  ├─ base.py
+│  ├─ config.py
 │  └─ fake.py
 └─ __init__.py
 ```
@@ -145,6 +146,7 @@ src/jixue/
 | --- | --- | --- |
 | `llm/__init__.py` | 提交 | 导出 LLM 接口和 FakeLLM。 |
 | `llm/base.py` | 提交 | 定义供应商无关的 `LLMClient` Protocol 与流事件。 |
+| `llm/config.py` | 提交 | 安全读取默认/本地 YAML、展开环境变量、校验模型目录，并生成严格四字段 `LLMConfig`；也提供只读诊断入口。 |
 | `llm/fake.py` | 提交 | 产生确定性 Markdown 文本、Token 和完成事件，用于离线开发。 |
 
 真实 `anthropic` SDK 将来只能出现在本目录的适配器子目录中，不能进入 `base.py`。
@@ -182,6 +184,7 @@ src/jixue/
 | --- | --- |
 | `tests/domain/test_events.py` | 验证信封序列化、协议版本和错误输入。 |
 | `tests/bridge/test_application.py` | 验证握手、FakeLLM 流式顺序、Token 和完成事件。 |
+| `tests/llm/test_config.py` | 验证默认三模型、缺 Key 降级、环境变量脱敏、本地覆盖和坏目录拒绝。 |
 | `tests/test_architecture.py` | 防止领域层导入 Anthropic、Electron 或 MCP SDK。 |
 | `tests/ui/smoke_renderer.py` | 用本机 Chrome 和 Mock Bridge 检查真实 Renderer 布局、交互和控制台。 |
 | `tests/ui/smoke_electron.mjs` | 启动真实 Electron，覆盖 Main、Preload、Bridge、Renderer，并检查退出错误。 |

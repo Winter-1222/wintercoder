@@ -2,7 +2,7 @@
 
 > 适合读者：几乎零基础，已经知道第 0 章中的 Renderer、Preload、Main、Python Bridge 分别是什么。
 
-> 当前进度：本章只完成了 FakeLLM 流式链路。真实 DeepSeek、配置加载、完整多轮历史和模型选择还没有实现，后文会明确区分“现在已有”和“以后再做”。
+> 当前进度：本章已完成 FakeLLM 流式链路和独立模型配置加载。真实 DeepSeek、完整多轮历史和 UI 模型选择还没有实现，后文会明确区分“现在已有”和“以后再做”。
 
 ## 1. 本章最终要回答的问题
 
@@ -46,6 +46,7 @@
 3. 解释为什么一个回复会产生很多 `stream_text` 事件。
 4. 解释为什么生成中显示纯文本，完成后才渲染 Markdown。
 5. 知道当前 FakeLLM 和以后真实 DeepSeek 的替换位置。
+6. 解释 `models.yaml` 怎样变成只有四个字段的 `LLMConfig`。
 
 ## 2. 推荐阅读顺序
 
@@ -55,6 +56,7 @@
 2. 再读第 4 节全景图。
 3. 跟着第 5—8 节走完“你好”的完整生命周期。
 4. 最后读第 11 节，确认哪些部分还是假的。
+5. 再读第 12 节，单独走一遍“配置文件怎样变成 Python 对象”。
 
 第一轮不要停下来研究每一行语法。目标只是知道数据从哪里来、去了哪里。
 
@@ -76,6 +78,15 @@
 | 12 | 回到 `App.tsx` | `handleBridgeEvent()`、`MessageView` | 文本怎样显示并最终变成 Markdown？ |
 | 13 | 回到 `state.ts` | `text_received`、`request_completed` | 每个事件怎样修改 UI 状态？ |
 
+配置加载目前还没有插入上面这条聊天链路，所以第二轮读完消息后，再单独按这个顺序阅读：
+
+| 顺序 | 文件 | 重点位置 | 只回答什么问题 |
+| --- | --- | --- | --- |
+| 1 | `config/models.yaml` | `default_model`、`models`、`llm` | 人写的三模型配置长什么样？ |
+| 2 | `src/jixue/llm/config.py` | `load_model_catalog()` | 默认文件、本地覆盖和环境变量怎样汇合？ |
+| 3 | 同一文件 | `_parse_catalog()`、`_parse_llm_config()` | 普通字典怎样经过校验变成领域对象？ |
+| 4 | 同一文件 | `LLMConfig` | 为什么真正的适配器最终只看到四个字段？ |
+
 ### 第三轮：带着问题读
 
 建议在源码全局搜索以下字符串：
@@ -84,6 +95,7 @@
 2. 搜索 `stream_text`，找到事件的生成端和消费端。
 3. 搜索 `turn_complete`，找到 Markdown 从纯文本切换到渲染态的位置。
 4. 搜索 `request_id`，观察它怎样贯穿整个请求。
+5. 搜索 `load_model_catalog`，观察配置入口和每一层校验函数。
 
 跨语言项目最有效的阅读方法通常不是“按目录从头看”，而是跟踪同一个协议字段或事件类型。
 
@@ -771,6 +783,8 @@ assistant.content += "霁雪"
 - 流式片段真实逐条传输。
 - React 状态更新、耗时和 Markdown 渲染真实运行。
 - 关闭窗口和回收 Bridge 真实运行。
+- 默认/本地 YAML 合并、环境变量展开和四字段配置校验真实运行。
+- Flash、Pro、Vision Exp 三条目录记录能够被真实加载；缺 Key 会得到非致命状态。
 
 ### 当前仍然是模拟的部分
 
@@ -783,23 +797,360 @@ assistant.content += "霁雪"
 
 因此现在连续发送两条消息，只证明“可以连续请求”，不代表第二次请求知道第一次聊过什么。真正多轮对话要等 `ConversationManager`。
 
-## 12. 真实 DeepSeek 接入后，哪里会变
+## 12. 模型配置是怎么跑起来的
 
-当前核心调用是：
+这一节讲的是本章第二条完整链路。它和“你好”消息链路暂时是两条平行线：
+
+```text
+现在的聊天：
+Electron → Python Bridge → FakeLLM
+
+现在的配置检查：
+models.yaml → 配置加载器 → ModelCatalog → LLMConfig
+
+下一小步才会把两条线接起来：
+ModelCatalog → 客户端工厂 → AnthropicLLMClient → Python Bridge
+```
+
+所以这一节已经是真实运行的代码，但它目前不会改变 Electron 中的 FakeLLM 回复。
+
+### 12.1 先认识 YAML、目录和 dataclass
+
+#### YAML 是什么
+
+YAML 是一种适合人手写的配置格式。它用缩进表示层级，例如：
+
+```yaml
+default_model: flash
+models:
+  flash:
+    label: Flash
+```
+
+可以先把它理解成“比 JSON 少一些括号的键值表”。缩进是语法的一部分，少两个空格或多两个空格都可能改变含义。
+
+#### 这里的“模型目录”不是文件夹
+
+`ModelCatalog` 中文叫“模型目录”，意思是一张可选择模型的清单，不是 Windows 文件夹。它包含：
+
+```text
+ModelCatalog
+├─ schema_version：配置格式版本
+├─ default_model：默认选哪个稳定 ID
+└─ models：所有模型
+   ├─ flash → ModelDefinition
+   ├─ pro → ModelDefinition
+   └─ vision_exp → ModelDefinition
+```
+
+每个 `ModelDefinition` 再分成两类信息：
+
+| 信息 | 例子 | 谁使用 |
+| --- | --- | --- |
+| 应用元数据 | label、experimental、capabilities、context_window | UI、上下文管理、功能判断 |
+| LLM 连接配置 | protocol、model、base_url、api_key | 客户端工厂和供应商适配器 |
+
+#### dataclass 是什么
+
+Python `@dataclass` 可以理解成“主要用来装数据的类”。例如 `LLMConfig` 定义了四个字段，Python 会帮助它生成初始化方法：
+
+```python
+config = LLMConfig(
+    protocol="anthropic",
+    model="deepseek-v4-flash",
+    base_url="https://api.deepseek.com/anthropic",
+    api_key=None,
+)
+```
+
+`frozen=True` 表示对象创建后不能随意改字段；`slots=True` 限制对象只能拥有声明过的字段。两者共同减少运行中误改配置的机会。
+
+### 12.2 为什么 `LLMConfig` 严格只有四个字段
+
+`LLMConfig` 只回答“怎样连接一次 LLM 服务”：
+
+| 字段 | 问题 | 当前值示例 |
+| --- | --- | --- |
+| `protocol` | 应该走哪种 API 协议？ | `anthropic` |
+| `model` | 请求中填写哪个供应商模型名？ | `deepseek-v4-flash` |
+| `base_url` | 请求发到哪里？ | `https://api.deepseek.com/anthropic` |
+| `api_key` | 怎样证明调用者有权限？ | 从环境变量读取，缺失时为 `None` |
+
+`label` 不在里面，因为“Flash”只是 UI 展示文字；`context_window` 不在里面，因为它属于应用的上下文预算；`experimental` 也不在里面，因为 SDK 不需要知道界面怎样标记实验模型。
+
+这种拆分叫“关注点分离”：一个对象只回答一类问题。
+
+### 12.3 从一条终端命令开始
+
+在项目根目录运行：
+
+```powershell
+conda run --no-capture-output -n mycoder python -m jixue.llm.config
+```
+
+这条命令的每一段含义是：
+
+| 片段 | 含义 |
+| --- | --- |
+| `conda run` | 临时进入一个 Conda 环境运行命令 |
+| `-n mycoder` | 指定环境名为 `mycoder` |
+| `python -m` | 把一个 Python 模块当程序运行 |
+| `jixue.llm.config` | 运行 `src/jixue/llm/config.py` 的 `main()` |
+
+它不会启动 Electron，不会导入 Anthropic SDK，也不会请求 DeepSeek。
+
+### 12.4 第 1 步：`main()` 找到默认文件
+
+- 文件：`src/jixue/llm/config.py`
+- 函数：`main()`、`_default_config_path()`
+- 输入：命令行参数；默认没有额外参数
+- 输出：`config/models.yaml` 的 `Path`
+- 为什么存在：手动检查时不应该要求初学者先写 Python 代码
+
+`_default_config_path()` 先检查当前目录下面有没有 `config/models.yaml`。如果命令不是从项目根目录运行，它再尝试从当前源码文件的位置反推项目根。
+
+### 12.5 第 2 步：确定可选的本地覆盖文件
+
+- 函数：`load_model_catalog()`
+- 输入：默认路径、可选 `local_path`、环境变量映射
+- 输出：还不是目录对象，只是确定两份可能的输入文件
+- 为什么存在：提交到 Git 的默认配置和个人电脑配置要分开
+
+没有显式传 `local_path` 时，加载器自动寻找：
+
+```text
+config/models.local.yaml
+```
+
+它不存在是正常情况。它已经被 `.gitignore` 排除，因此可以放本地端点或个人选择，但仍然不建议直接写 Key；Key 最好继续放环境变量。
+
+### 12.6 第 3 步：YAML 文本变成普通 Python 数据
+
+- 函数：`_read_yaml_mapping()`
+- 输入：文件路径
+- 中间处理：UTF-8 读取，再调用 `yaml.safe_load()`
+- 输出：`dict[str, object]`
+- 为什么存在：后面的校验函数需要先拿到普通键值数据
+
+以 Flash 为例，YAML 解析后可以粗略理解为：
+
+```python
+{
+    "default_model": "flash",
+    "models": {
+        "flash": {
+            "label": "Flash",
+            "llm": {
+                "protocol": "anthropic",
+                "model": "deepseek-v4-flash",
+                "base_url": "https://api.deepseek.com/anthropic",
+                "api_key": "${DEEPSEEK_API_KEY}",
+            },
+        },
+    },
+}
+```
+
+这里使用 `safe_load` 而不是危险的通用加载，是因为配置文件属于外部输入，不能允许 YAML 标签要求 Python 随意创建对象。
+
+注意：此时数据仍然是“不可信的普通字典”。字段可能拼错、缺失或类型错误，还不能直接交给客户端。
+
+### 12.7 第 4 步：本地模型按 ID 整体覆盖
+
+- 函数：`_merge_local_document()`
+- 输入：默认字典和可选本地字典
+- 输出：合并后的新字典
+- 为什么存在：允许个人配置，又不修改可提交的默认文件
+
+规则是：
+
+```text
+默认 models：flash、pro、vision_exp
+本地 models：pro
+                    ↓
+最终 models：默认 flash、本地 pro、默认 vision_exp
+```
+
+同名 `pro` 是“整条替换”，不是字段级深合并。本地 `pro` 如果只写 `model` 而漏掉 `label`，后面的校验会报错。
+
+为什么这样看起来比较啰嗦，反而更安全？因为最终一条模型记录只来自一份文件。深合并会让一半字段来自默认文件、一半来自本地文件，初学者很难判断当前程序究竟用了什么。
+
+### 12.8 第 5 步：检查目录顶层结构
+
+- 函数：`_parse_catalog()`
+- 输入：合并后的普通字典
+- 输出：校验中的目录数据
+- 检查内容：`schema_version`、`default_model`、`models`
+
+顶层字段必须一个不少、也不能多出拼错的字段。例如把 `default_model` 写成 `default_models` 时，不会拖到 API 请求才报奇怪错误，而会直接得到类似：
+
+```text
+模型目录 缺少字段：default_model
+```
+
+当前只接受 `schema_version: 1`。以后配置格式变化时可以新增版本迁移，而不是悄悄用旧代码误读新格式。
+
+### 12.9 第 6 步：逐条检查模型元数据
+
+- 函数：`_parse_model_definition()`
+- 输入：`flash` 这样的稳定 ID 和对应字典
+- 输出：`ModelDefinition`
+- 为什么存在：UI 元数据和连接字段需要分别验证
+
+主要规则：
+
+1. ID 只能使用小写字母、数字和下划线，并以字母开头。
+2. `label` 必须是非空字符串。
+3. `experimental` 必须真的是 YAML `true/false`。
+4. `capabilities` 必须是非空、无重复的字符串列表。
+5. `context_window` 必须是正整数。
+6. `llm` 必须继续经过下一层四字段校验。
+
+稳定 ID 和供应商 model 不是同一个东西：
+
+```text
+flash                    deepseek-v4-flash
+  ↑                              ↑
+霁雪内部稳定 ID             供应商 API 模型名
+```
+
+供应商以后升级模型名称时，可以修改右边，而 UI 保存的 `flash` 选择仍然有效。
+
+### 12.10 第 7 步：严格提取四字段 `LLMConfig`
+
+- 函数：`_parse_llm_config()`
+- 输入：模型记录中的 `llm` 字典
+- 输出：`LLMConfig`
+- 为什么存在：把 YAML 和未来适配器彻底隔开
+
+这里要求字段集合精确等于：
+
+```text
+protocol + model + base_url + api_key
+```
+
+当前 `protocol` 只接受 `anthropic`。如果写成 `openai`，错误会说明“尚未安装适配器”，而不是偷偷使用 Anthropic 发送错误格式。
+
+`base_url` 至少要是带主机名的完整 `http://` 或 `https://` 地址。本地开发端点可以使用 HTTP，远程服务应使用 HTTPS。
+
+### 12.11 第 8 步：展开环境变量，但不泄露 Key
+
+YAML 中提交的是：
+
+```yaml
+api_key: ${DEEPSEEK_API_KEY}
+```
+
+加载器看到整个字段符合 `${VAR}` 形状后，才去当前 Python 进程环境查找 `DEEPSEEK_API_KEY`。
+
+结果分两种：
+
+| 环境变量 | `LLMConfig.api_key` | `credential_status` | 是否是致命配置错误 |
+| --- | --- | --- | --- |
+| 已设置且非空 | 真实字符串 | `ready` | 否 |
+| 未设置或为空 | `None` | `credentials_missing` | 否 |
+
+缺 Key 不让目录加载失败，因为新用户仍然应该能打开应用和使用 FakeLLM。但下一步接入真实客户端后，发送 DeepSeek 请求前必须给出明确提示。
+
+`api_key` 字段还使用了 `repr=False`。因此下面这种调试打印不会包含 Key：
+
+```python
+print(catalog)
+```
+
+错误消息和诊断摘要也只显示凭据状态。
+
+首版只支持“整个字段替换”，不支持：
+
+```yaml
+base_url: https://${HOST}/anthropic
+```
+
+这是刻意的简化。完整替换只有“替换成功”或“变量缺失”两种结果，更容易解释和排错。
+
+### 12.12 第 9 步：生成只读领域对象并打印安全摘要
+
+- 函数：`_parse_catalog()`、`format_catalog_summary()`
+- 输出：`ModelCatalog` 和不含 Key 的文本
+- 为什么存在：后续代码只消费已经验证的数据
+
+`models` 最终用 `MappingProxyType` 包成只读映射，避免某个运行中函数无意执行：
+
+```python
+catalog.models["flash"] = another_model
+```
+
+正常诊断输出类似：
+
+```text
+模型目录加载成功
+默认模型：flash
+模型数量：3
+- flash: Flash → deepseek-v4-flash（credentials_missing）
+- pro: Pro → deepseek-v4-pro（credentials_missing）
+- vision_exp: Vision Exp → deepseek-v4-flash-vision-exp（credentials_missing，实验模型）
+```
+
+这就是从“人手写 YAML”到“程序可安全使用对象”的完整链路。
+
+### 12.13 哪些错误允许继续，哪些必须停止
+
+| 情况 | 结果 | 原因 |
+| --- | --- | --- |
+| `models.local.yaml` 不存在 | 正常继续 | 本地覆盖本来就是可选的 |
+| `DEEPSEEK_API_KEY` 不存在 | 目录加载成功，状态为缺凭据 | 仍可使用 FakeLLM |
+| 默认模型 ID 不存在 | 抛出 `ModelCatalogError` | 应用无法知道默认选什么 |
+| `llm` 少一个字段 | 抛出 `ModelCatalogError` | 不能构造可靠客户端 |
+| 未知 protocol | 抛出 `ModelCatalogError` | 对应适配器没有实现 |
+| URL 不是完整 HTTP(S) 地址 | 抛出 `ModelCatalogError` | 请求端点结构无效 |
+| YAML 语法损坏 | 抛出 `ModelCatalogError` | 连普通数据都无法可靠读取 |
+
+这里的原则是：可以由用户稍后补上的认证信息允许降级；会让程序猜测行为的结构错误立即停止。
+
+### 12.14 怎样写本地覆盖
+
+例如只想在个人电脑上替换 Pro，可创建不提交的 `config/models.local.yaml`：
+
+```yaml
+default_model: pro
+models:
+  pro:
+    label: 本地 Pro
+    experimental: true
+    capabilities: [text, tools]
+    context_window: 1000000
+    llm:
+      protocol: anthropic
+      model: my-local-pro
+      base_url: http://127.0.0.1:9000/anthropic
+      api_key: ${LOCAL_LLM_API_KEY}
+```
+
+`pro` 条目必须完整；`flash` 和 `vision_exp` 没写，所以继续使用默认文件中的记录。调试完成后运行诊断命令确认最终结果，不要靠肉眼猜合并结果。
+
+### 12.15 真实 DeepSeek 接入后，哪里会变
+
+当前聊天核心调用仍是：
 
 ```python
 BridgeApplication(FakeLLMClient())
 ```
 
-以后会由配置和工厂创建 Anthropic 协议适配器，例如概念上变成：
+下一小步会由配置和工厂创建 Anthropic 协议适配器，概念上变成：
 
 ```text
-BridgeApplication(AnthropicLLMClient(config))
+catalog.get("flash").llm
+  ↓ 得到 LLMConfig
+LLMClientFactory.create(config)
+  ↓ protocol 是 anthropic
+AnthropicLLMClient(config)
+  ↓ 注入 BridgeApplication
+BridgeApplication(client)
 ```
 
 适配器内部才允许导入 `anthropic` SDK，并负责：
 
-1. 用 `protocol/model/base_url/api_key` 创建 SDK 客户端。
+1. 用 `model/base_url/api_key` 创建 SDK 客户端。
 2. 把霁雪消息转换成 Anthropic API 请求。
 3. 把 SDK 流事件转换成 `LLMStreamEvent`。
 4. 把 SDK 异常转换成霁雪可以理解的错误。
@@ -812,6 +1163,16 @@ BridgeApplication(AnthropicLLMClient(config))
 - React reducer 仍然处理同一组 action。
 
 这就是封装供应商 SDK 的意义。
+
+### 12.16 外部 API 信息从哪里核对
+
+模型名称和端点会随服务更新，不能只依赖记忆。本步对照了 DeepSeek 官方资料：
+
+- [Models & Pricing](https://api-docs.deepseek.com/quick_start/pricing/)：列出 Flash、Pro、Vision Exp、1M 上下文和 Anthropic 端点。
+- [Using the Anthropic API](https://api-docs.deepseek.com/guides/anthropic_api/)：确认 `base_url` 和 Anthropic SDK 调用方式。
+- [Change Log](https://api-docs.deepseek.com/updates/)：确认 Vision Exp 的实验模型名。
+
+如果以后真实请求提示模型不存在，先重新查官方文档，再修改 `config/models.yaml`，不要先去改 React 或 reducer。
 
 ## 13. 如何亲手跟踪一条消息
 
@@ -879,7 +1240,9 @@ npm run test:electron
 | 文件 | 职责 | 本章最重要的位置 |
 | --- | --- | --- |
 | `src/jixue/llm/base.py` | 定义自己的模型接口 | `LLMClient`、`LLMStreamEvent` |
+| `src/jixue/llm/config.py` | 模型目录和四字段配置 | `load_model_catalog()`、`LLMConfig` |
 | `src/jixue/llm/fake.py` | 模拟流式模型 | `FakeLLMClient.stream()` |
+| `config/models.yaml` | 可提交的三模型目录 | `default_model`、每个模型的 `llm` |
 | `src/jixue/bridge/application.py` | 模型事件转 Bridge 事件 | `_handle_chat()` |
 | `src/jixue/bridge/server.py` | stdin/stdout 运输 | `run()`、`_write_event()` |
 | `apps/desktop/src/main/bridge-process.ts` | Node 与 Python 管道 | `sendChat()`、`consumeStdout()` |
@@ -937,6 +1300,16 @@ sequence 3 → usage
 sequence 4 → turn_complete
 ```
 
+### 练习 5：只读检查模型目录
+
+执行：
+
+```powershell
+conda run --no-capture-output -n mycoder python -m jixue.llm.config
+```
+
+先不要设置 Key。确认三个模型仍然能加载，但状态都是 `credentials_missing`。思考：为什么“缺 Key”和“YAML 缺字段”不能都让整个程序直接退出？
+
 ## 17. 自测题与答案
 
 1. **用户按发送后，为什么用户气泡能立即出现？** 因为 Renderer 先 dispatch `request_started`，不等待 Python。
@@ -949,18 +1322,22 @@ sequence 4 → turn_complete
 8. **什么时候开始 Markdown 渲染？** 收到 `turn_complete`，reducer 把消息状态设为 complete 后。
 9. **当前第二条请求知道第一条消息吗？** 不知道；ConversationManager 尚未实现。
 10. **换成 DeepSeek 后 React 是否应该重写？** 不应该；供应商差异应被 LLM 适配器隐藏。
+11. **`LLMConfig` 为什么不包含 label 和 context_window？** 这些是应用模型目录的展示与调度元数据，不是创建供应商客户端必需的四个字段。
+12. **没有 `DEEPSEEK_API_KEY` 时，目录为什么仍能加载？** 缺凭据是可补救的运行状态，用户仍应能启动应用并使用 FakeLLM。
+13. **本地覆盖为什么整条替换，而不是只补一个 model 字段？** 整条替换能看清最终配置来自哪里，避免深合并把两份配置悄悄拼成一条。
+14. **为什么 `api_key` 设置了 `repr=False`？** 防止打印配置对象时把真实 Key 带进终端、日志或错误报告。
+15. **运行配置诊断命令会调用 DeepSeek 吗？** 不会；它只读文件、环境变量并构造本地 Python 对象。
 
-如果第 1—8 题能用自己的话回答，你已经理解当前消息链路。第 9、10 题帮助你区分“当前能力”和“未来设计”。
+如果第 1—8 题能用自己的话回答，你已经理解当前消息链路；第 9、10 题帮助区分“当前能力”和“未来设计”；第 11—15 题用于复盘本次配置加载。
 
 ## 18. 本章下一小步
 
 接下来按这个顺序继续，不进入工具系统：
 
-1. 实现 `LLMConfig` 和 `config/models.yaml` 加载，解释四字段怎样变成客户端。
-2. 在适配器内部接入 Anthropic SDK，并用假 SDK 流先测试转换。
-3. 使用 DeepSeek Anthropic 端点完成一次真实流式手测。
-4. 实现内部消息与 API 消息两层模型。
-5. 实现 `ConversationManager.to_api_format()`，让第二次请求携带完整历史。
-6. 加入 Flash、Pro、Vision Exp 模型选择。
+1. 在适配器内部接入 Anthropic SDK，并用假 SDK 流先测试转换。
+2. 使用 DeepSeek Anthropic 端点完成一次真实流式手测。
+3. 实现内部消息与 API 消息两层模型。
+4. 实现 `ConversationManager.to_api_format()`，让第二次请求携带完整历史。
+5. 加入 Flash、Pro、Vision Exp 模型选择。
 
 每完成一步，本章都会增加该能力自己的推荐阅读顺序、端到端链路、输入输出示例、常见错误和手动验证方法。

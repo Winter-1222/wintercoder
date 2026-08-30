@@ -75,10 +75,9 @@
 
 ## 下一小步
 
-1. 定义并测试 `LLMConfig` 与 YAML 加载器。
-2. 新建只允许在适配器目录导入的 Anthropic 客户端。
-3. 用假 SDK 流先测试转换，再使用 DeepSeek Key 做一次人工集成测试。
-4. 实现内部/API 两层消息和 `ConversationManager.to_api_format()`。
+1. 新建只允许在适配器目录导入的 Anthropic 客户端。
+2. 用假 SDK 流先测试转换，再使用 DeepSeek Key 做一次人工集成测试。
+3. 实现内部/API 两层消息和 `ConversationManager.to_api_format()`。
 
 ## 2026-08-30：Codex 风格界面修订
 
@@ -139,3 +138,45 @@
 - reducer 与界面行为保持不变，注释内容逐项对照当前事件名称与字段。
 - 完整自动化结果记录在本轮最终报告中。
 - 本次改动不提交 Git，等待用户先手动阅读和测试。
+
+## 2026-08-30：B 步四字段配置与模型目录加载
+
+### 目标
+
+- 让 YAML 中的普通数据先经过严格校验，再交给未来的 LLM 适配器。
+- 保证 `LLMConfig` 只有 `protocol/model/base_url/api_key` 四个字段。
+- 缺少 Key 时允许应用继续启动；真正的结构错误要尽早拒绝。
+
+### 实际改动
+
+- 新增 `src/jixue/llm/config.py`，实现默认目录读取、可选本地覆盖、环境变量展开和逐层校验。
+- 新增 `LLMConfig`、`ModelDefinition`、`ModelCatalog`、`CredentialStatus` 和可读的 `ModelCatalogError`。
+- 同 ID 本地模型采用整体替换，避免深合并产生“看起来成功、实际字段来自两份文件”的隐式配置。
+- `api_key` 不进入对象 repr；诊断命令只显示 `ready` 或 `credentials_missing`。
+- 新增 `python -m jixue.llm.config` 只读检查入口，不启动 Electron，也不请求模型。
+- 本地新增 6 项配置测试，覆盖三模型、缺 Key、脱敏、覆盖、未知协议、坏默认值和缺字段。
+
+### 遇到的问题
+
+#### Mypy 报告重复类型转换
+
+- 现象：严格类型检查指出 bool 和 int 分支中的 `cast` 是多余的。
+- 原因：经过 `type(value) is ...` 判断后，Mypy 已经自动把 `object` 收窄为目标类型。
+- 修复：直接返回已收窄的值，并在源码旁解释为什么不再需要转换。
+- 复盘：类型检查不仅能找错误，也能提示代码中没有必要的“保险动作”。
+
+### 设计取舍
+
+- 选择完整字段环境变量引用，例如 `${DEEPSEEK_API_KEY}`；暂不支持字符串中间插值。
+- 原因：完整替换的输入输出容易解释，也不会留下半替换 URL。
+- 选择缺 Key 为非致命状态，字段缺失和未知协议为致命错误。
+- 原因：没有 Key 的新用户仍应能打开 FakeLLM 界面，但错误结构不能拖到网络请求时才暴露。
+
+### 验证
+
+- 官方 DeepSeek 文档确认当前三模型名和 Anthropic 端点与目录一致。
+- 配置测试 6 项通过，诊断命令正确显示三个模型与缺凭据状态。
+- Python 17 项、前端 2 项、Ruff、Mypy 和 TypeScript 全部通过。
+- 真实 Electron 构建、FakeLLM 消息和关闭窗口回归通过，配置模块没有破坏既有链路。
+- 当前聊天仍使用 FakeLLM；本步不冒充真实 DeepSeek 已接通。
+- 本次改动暂不提交，等待用户手动测试。
