@@ -2,7 +2,7 @@
 
 > 适合读者：几乎零基础，已经知道第 0 章中的 Renderer、Preload、Main、Python Bridge 分别是什么。
 
-> 当前进度：本章已完成 FakeLLM 流式链路、独立模型配置加载和 Anthropic 协议适配器。适配器已用本地假 SDK 验证，但尚未接入 Electron，也没有发起真实 DeepSeek 请求；完整多轮历史和 UI 模型选择仍未实现。后文会一直明确区分“源码已写”“本地已测”“真实网络已验收”。
+> 当前进度：本章已完成 FakeLLM 流式链路、独立模型配置加载、Anthropic 协议适配器和 Bridge 进程级模型模式接线。默认 fake 与 configured 缺 Key 已用真实 Python 子进程验证，但尚未使用真实 Key 发起 DeepSeek 请求；完整多轮历史和 UI 模型选择仍未实现。后文会一直明确区分“源码已写”“本地已测”“真实网络已验收”。
 
 ## 1. 本章最终要回答的问题
 
@@ -49,6 +49,8 @@
 6. 解释 `models.yaml` 怎样变成只有四个字段的 `LLMConfig`。
 7. 解释一段 SDK 文本流怎样变成霁雪的文本、用量和完成事件。
 8. 解释为什么 SDK 异常不能直接交给 Bridge 或 React。
+9. 解释 `JIXUE_LLM_MODE` 怎样决定 Python 进程使用 FakeLLM 还是真实适配器。
+10. 解释为什么 configured 缺 Key 可以完成握手，却在发送时返回错误。
 
 ## 2. 推荐阅读顺序
 
@@ -80,7 +82,7 @@
 | 12 | 回到 `App.tsx` | `handleBridgeEvent()`、`MessageView` | 文本怎样显示并最终变成 Markdown？ |
 | 13 | 回到 `state.ts` | `text_received`、`request_completed` | 每个事件怎样修改 UI 状态？ |
 
-配置加载和真实适配器目前还没有插入上面这条 Electron 聊天链路，所以第二轮读完 FakeLLM 消息后，再单独按这个顺序阅读：
+默认 Electron 聊天仍走 FakeLLM；configured 模式已经把配置与真实适配器插入同一条 Bridge 链路。第二轮读完 FakeLLM 消息后，再按这个顺序阅读启动选择：
 
 | 顺序 | 文件 | 重点位置 | 只回答什么问题 |
 | --- | --- | --- | --- |
@@ -91,7 +93,10 @@
 | 5 | `src/jixue/llm/factory.py` | `create_llm_client()` | `protocol` 怎样决定选择哪个适配器？ |
 | 6 | `src/jixue/llm/adapters/anthropic_client.py` | `stream()` | SDK 文本流怎样变成霁雪事件？ |
 | 7 | 同一文件 | `_get_client()`、`_translate_anthropic_error()` | 为什么延迟创建客户端，SDK 错误又怎样变安全？ |
-| 8 | `src/jixue/bridge/application.py` | 两个 `except` 分支 | 领域错误怎样变成 UI 能理解的错误信封？ |
+| 8 | `src/jixue/bridge/bootstrap.py` | `create_runtime_llm()` | 进程环境怎样选择 Fake 或目录客户端？ |
+| 9 | `src/jixue/bridge/server.py` | `main()` | 启动装配怎样注入 BridgeApplication？ |
+| 10 | `src/jixue/bridge/application.py` | 握手、两个 `except` 分支 | 实际模型名和领域错误怎样变成信封？ |
+| 11 | `apps/desktop/src/main/bridge-process.ts` | `consumeLine()` | Electron 怎样验证并显示 Python 声明的模型？ |
 
 ### 第三轮：带着问题读
 
@@ -105,6 +110,9 @@
 6. 搜索 `create_llm_client`，观察协议选择只出现在哪一层。
 7. 搜索 `import anthropic`，确认它只出现在适配器文件。
 8. 搜索 `cache_control`，找到提示缓存参数真正进入 SDK 请求的位置。
+9. 搜索 `JIXUE_LLM_MODE`，找到环境变量说明、启动选择和手测入口。
+10. 搜索 `create_runtime_llm`，观察 server 只在最外层组装依赖。
+11. 搜索 `payload.model`，观察 Python 握手模型名怎样进入 Electron 状态。
 
 跨语言项目最有效的阅读方法通常不是“按目录从头看”，而是跟踪同一个协议字段或事件类型。
 
@@ -796,6 +804,9 @@ assistant.content += "霁雪"
 - Flash、Pro、Vision Exp 三条目录记录能够被真实加载；缺 Key 会得到非致命状态。
 - Anthropic 适配器使用真实官方 SDK 接口和类型，但网络流由本地假 SDK 对象模拟。
 - SDK 请求参数、流式事件顺序、最终 Token、停止原因和常见类型化异常翻译已经自动验证。
+- Bridge 的 fake/configured 启动选择真实运行，模型目录、客户端工厂和 BridgeApplication 已接通。
+- `bridge.ready` 会携带实际模型名，Electron 验证后显示“实际模型 / Bridge 在线”。
+- configured 缺 Key 的真实 Python 子进程能握手，并在发送时返回 `credentials_missing`。
 
 ### 当前仍然是模拟的部分
 
@@ -805,14 +816,14 @@ assistant.content += "霁雪"
 - `model_id` 目前固定为 `fake`。
 - 每次只把当前用户文本发给 FakeLLM，没有附带完整历史。
 - 左侧“新任务”目前只是界面占位，没有创建会话功能。
-- Electron Bridge 还没有从模型目录创建 `AnthropicLLMClient`，所以界面仍不会请求 DeepSeek。
 - 还没有用用户自己的 Key 做真实网络手测，也没有观察到真实 Prompt Cache 命中。
+- 模型目前在进程启动前通过环境变量选择，UI 里还没有 Flash/Pro/Vision Exp 下拉框。
 
 因此现在连续发送两条消息，只证明“可以连续请求”，不代表第二次请求知道第一次聊过什么。真正多轮对话要等 `ConversationManager`。
 
 ## 12. 模型配置是怎么跑起来的
 
-这一节讲的是本章第二条链路。配置、工厂和适配器已经连在代码层，但还没有接入 Electron 的默认启动入口：
+这一节讲的是本章第二条链路。配置、工厂、适配器和 Bridge 启动入口现在已经连通：
 
 ```text
 现在的聊天：
@@ -821,14 +832,12 @@ Electron → Python Bridge → FakeLLM
 现在的配置检查：
 models.yaml → 配置加载器 → ModelCatalog → LLMConfig
 
-现在已经完成并用假 SDK 测试：
-LLMConfig → 客户端工厂 → AnthropicLLMClient → 霁雪流事件
-
-下一小步要接上的最后一段：
-ModelCatalog → 客户端工厂 → AnthropicLLMClient → Python Bridge 启动入口
+configured 启动：
+进程环境 → models.yaml → ModelCatalog → 客户端工厂
+  → AnthropicLLMClient → Python Bridge → Electron
 ```
 
-所以配置与适配器都是可运行源码，但 Electron 仍然注入 FakeLLM。这样的分步方式让我们可以先免费验证转换逻辑，再决定何时使用真实 Key。
+没有设置模式时，bootstrap 明确注入 FakeLLM；设置 configured 时才注入模型目录客户端。两种模式共用后面的 Bridge、Main、Preload、reducer 和 UI。
 
 ### 12.1 先认识 YAML、目录和 dataclass
 
@@ -1252,30 +1261,110 @@ Envelope(type="error", payload={code, message, retryable, scope})
 
 真正不认识的程序异常由 Bridge 转成固定的 `llm_internal_error`，不会把 `repr(error)`、用户输入或 Key 回显到 UI。
 
-### 12.19 接入真实 DeepSeek 时，哪里会变
+### 12.19 Bridge 启动时怎样选择模型
 
-下一小步会让 Bridge 启动入口根据配置选择客户端，概念上是：
+真正的选择入口是 `src/jixue/bridge/bootstrap.py`。它没有界面，也不处理一条具体消息；它只在 Python 进程启动时回答一个问题：“本次进程应该使用哪个 `LLMClient`？”
+
+完整启动链路是：
 
 ```text
-catalog.get("flash").llm
+用户在项目根目录启动 npm run dev
   ↓
-create_llm_client(config)
-  ↓
-AnthropicLLMClient(config)
+Electron Main 创建 PythonBridge
+  ↓ 把 Python 子进程 cwd 固定为 projectRoot
+Conda mycoder 启动 python -m jixue.bridge
+  ↓ __main__.py
+server.main()
+  ↓ create_runtime_llm(Path.cwd())
+bootstrap.load_project_environment(project_root)
+  ↓ 先复制 os.environ（系统环境只是兜底）
+  ↓ 再读取 project_root/.env
+  ↓ .env 中的同名值覆盖系统环境
+bootstrap 读取合并后的 JIXUE_LLM_MODE
+  ├─ 没设置、空字符串或 fake → FakeLLMClient
+  └─ configured
+       ↓ 读取 config/models.yaml
+       ↓ 用合并后的配置展开 DEEPSEEK_API_KEY
+       ↓ JIXUE_MODEL_ID 或 default_model
+       ↓ ModelCatalog.get(model_id)
+       ↓ create_llm_client(definition.llm)
+       ↓ AnthropicLLMClient
   ↓
 BridgeApplication(client)
+  ↓ 用户发送 bridge.hello
+bridge.ready.payload.model = client.model_name
+  ↓
+Electron Main 验证 payload.model 是非空字符串
+  ↓
+界面显示“实际模型名 / Bridge 在线”
 ```
 
-下面这些上层代码不应该改变：
+逐步解释几个容易混淆的点：
 
-- `BridgeApplication` 仍然调用 `LLMClient.stream()`。
-- Bridge 仍然发送 `stream_text/usage/turn_complete`。
-- Main 和 Preload 仍然转发同一协议。
-- React reducer 仍然处理同一组 action。
+1. `.env.example` 是空值模板，不会被读取；复制出来并命名为 `.env` 后，才是本机真实配置。
+2. `Path.cwd()` 是项目根目录，因为 `PythonBridge.start()` 把 Python 子进程 `cwd` 固定为 `projectRoot`；所以 bootstrap 能稳定找到“当前项目/.env”。
+3. `load_project_environment()` 先复制系统环境，再用 `.env` 覆盖同名值。即使系统里写着 `fake`，项目文件写 `configured`，最终仍使用 configured。
+4. 代码使用 `dotenv_values()` 读取为局部字典，没有调用会修改全局 `os.environ` 的 `load_dotenv()`。局部数据流更容易测试和排错。
+5. Electron Main 和 Python 可以接触配置，Renderer 页面拿不到 API Key，所以密钥不会进入网页状态或 IPC payload。
+6. bootstrap 默认选择 fake。没有 `.env`、模式也未通过系统环境提供时，即使电脑上碰巧存在 Key，也不会自动联网。
+7. configured 模式先选择“目录 ID”，例如 `flash`；`deepseek-v4-flash` 是目录记录里的 API 模型名，两者不是同一个概念。
+8. bootstrap 创建 `AnthropicLLMClient` 时仍不会联网，因为适配器采用延迟创建。真正遍历 `stream()` 时才检查 Key 并启动请求。
+9. `bridge.ready` 不再写死 FakeLLM。Python 注入什么客户端，握手就声明什么 `model_name`。
+10. Electron 会对跨进程的 model 字段做运行时检查。TypeScript 类型在 JSON 到达后不会自动保护程序。
 
-这就是封装供应商 SDK 的意义。真实手测会由用户在本机临时设置 Key 后进行；Key 不写入 YAML、测试、日志或 Git。
+配置优先级可以记成一句话：
 
-### 12.20 外部 API 信息从哪里核对
+```text
+项目根目录 .env  >  Python 进程继承的系统环境  >  代码默认值 fake
+```
+
+这里的“>”表示左边优先。程序不会扫描用户主目录，也不会读取其他项目的 `.env`。
+
+### 12.20 为什么 configured 缺 Key 仍然可以握手
+
+用没有 Key 的 configured 模式启动时，链路是：
+
+```text
+项目根目录 .env：
+JIXUE_LLM_MODE=configured
+JIXUE_MODEL_ID=flash
+DEEPSEEK_API_KEY 为空
+  ↓
+models.yaml 结构校验通过
+  ↓
+LLMConfig.api_key = None
+  ↓
+AnthropicLLMClient 被创建，但 SDK 客户端尚未创建
+  ↓
+bridge.hello
+  ↓
+bridge.ready(model="deepseek-v4-flash")
+  ↓ 用户发送 chat.send
+AnthropicLLMClient.stream()
+  ↓ _get_client() 检查到 api_key is None
+LLMClientError(code="credentials_missing")
+  ↓ BridgeApplication 捕获
+error 信封
+  ↓ UI 显示“请先设置对应环境变量”，输入框恢复可用
+```
+
+这里的“握手成功”只表示 Python Bridge、模型目录和适配器组装成功，不表示模型认证已经成功，也不表示网络可用。真正的认证只能由一次真实 API 请求验证。
+
+这种设计对初学者更友好：可以先观察 UI 与模型名，再得到明确的缺凭据提示，而不是一启动就弹出难懂的 Python traceback。
+
+### 12.21 三种启动结果对照
+
+| 项目 `.env` 状态 | 握手模型 | 发送消息后 | 是否联网 |
+| --- | --- | --- | --- |
+| 文件不存在，且系统也不设置模式 | `fake-jixue` | 固定 FakeLLM 流式回复 | 否 |
+| `JIXUE_LLM_MODE=fake` | `fake-jixue` | 固定 FakeLLM 流式回复 | 否 |
+| configured，但 Key 为空 | `deepseek-v4-flash` 或所选模型 | `credentials_missing` | 否 |
+| configured，模型 ID 非法 | 无握手，Bridge 启动配置错误 | 不能发送 | 否 |
+| configured，Key 已设置 | 所选真实 API 模型名 | 尝试真实流式请求 | 是，可能产生费用 |
+
+非法模式、非法模型 ID 或损坏的 YAML 会让启动装配拒绝继续。错误只写 stderr，stdout 仍然保持纯 NDJSON，避免 Electron 把普通日志误解析成事件。
+
+### 12.22 外部 API 信息从哪里核对
 
 模型名称和端点会随服务更新，不能只依赖记忆。本步对照了 DeepSeek 官方资料：
 
@@ -1289,17 +1378,54 @@ BridgeApplication(client)
 
 ## 13. 如何亲手跟踪一条消息
 
-### 手动观察
+### 13.1 手动观察默认 FakeLLM
 
-1. 执行 `npm run dev`。
-2. 等待左下角显示 Bridge 在线。
-3. 输入“你好”。
-4. 按 Enter。
-5. 观察用户气泡立即出现。
-6. 观察 assistant 文本逐渐增长，此时能看到原始 Markdown。
-7. 观察完成后标题、列表和粗体被渲染。
-8. 观察 Token 和耗时停止变化。
-9. 关闭窗口，确认没有错误弹窗。
+1. 确认 `.env` 不存在，或把其中的 `JIXUE_LLM_MODE` 暂时改为 `fake`。
+2. 执行 `npm run dev`。
+3. 等待左下角显示 Bridge 在线。
+4. 输入“你好”。
+5. 按 Enter。
+6. 观察用户气泡立即出现。
+7. 观察 assistant 文本逐渐增长，此时能看到原始 Markdown。
+8. 观察完成后标题、列表和粗体被渲染。
+9. 观察 Token 和耗时停止变化。
+10. 关闭窗口，确认没有错误弹窗。
+
+fake 模式不需要任何 Key。因为项目 `.env` 优先于系统环境，换一个 PowerShell 不会改变文件配置；修改后必须完全关闭旧 Electron，再重新执行 `npm run dev`。
+
+### 13.2 安全观察 configured 缺 Key
+
+这个测试不会联网，也不会产生费用。如果你的 `.env` 已经保存真实 Key，可以跳过本用例，避免为测试而改动密钥。尚未填写 Key 时，把项目根目录 `.env` 写成：
+
+```dotenv
+JIXUE_LLM_MODE=configured
+JIXUE_MODEL_ID=flash
+DEEPSEEK_API_KEY=
+```
+
+保存后执行 `npm run dev`，然后：
+
+1. 等待界面显示“deepseek-v4-flash / Bridge 在线”。
+2. 输入“你好”并发送。
+3. 确认界面出现“当前模型没有配置 API Key，请先设置对应环境变量”。
+4. 确认应用没有退出，输入框可以继续使用。
+5. 关闭窗口，确认没有主进程错误弹窗。
+
+这里看到的 `deepseek-v4-flash` 只证明目录和适配器组装成功；因为 Key 为空，SDK 客户端根本不会创建，也不会发网络请求。
+
+### 13.3 准备真实 DeepSeek 手测
+
+真实手测会访问模型服务并可能产生费用。先确认项目根目录 `.env` 是：
+
+```dotenv
+JIXUE_LLM_MODE=configured
+JIXUE_MODEL_ID=flash
+DEEPSEEK_API_KEY=在这里填写你自己的真实Key
+```
+
+然后完全关闭旧 Electron，在项目根目录执行 `npm run dev`。`.env` 已被 Git 忽略，但仍是明文文件：不要截图、分享或复制进聊天，也不要把 Key 写进 `.env.example`、`models.yaml` 或测试文件。如果 Key 曾经进入 Git，即使后来删除文件，也应该立刻去供应商后台撤销并重建 Key。
+
+本步只把真实测试入口准备好，开发者自动化没有替用户发起这次付费请求。
 
 ### 用搜索跟踪代码
 
@@ -1349,6 +1475,9 @@ npm run test:electron
 | 返回 authentication_failed | `_translate_anthropic_error()` | Key 无效、失效或端点认证不匹配 |
 | 假 SDK 测试卡在 final message | `await stream.get_final_message()` | 忘记等待异步方法，拿到的是协程而不是 Message |
 | 看不到缓存命中数字 | `cache_control` 与 `Usage` | 当前只传了缓存参数，尚未扩展缓存统计和真实多轮前缀 |
+| 期待 DeepSeek，握手却显示 fake-jixue | `bootstrap.load_project_environment()` | 当前项目 `.env` 不存在、文件名错误，或模式仍是 `fake` |
+| Bridge 直接意外退出，无法握手 | Python stderr 与 `bootstrap.py` | 模式、模型 ID 或 YAML 结构无效 |
+| configured 能握手，发送却提示缺 Key | `LLMConfig.api_key` 与 `_get_client()` | `.env` 中变量名拼错、Key 为空，或文件没有放在项目根目录 |
 
 排查原则：先确认数据最后成功到达了哪一层，再检查下一条箭头，不要同时修改所有层。
 
@@ -1362,9 +1491,10 @@ npm run test:electron
 | `src/jixue/llm/adapters/anthropic_client.py` | 隔离官方 SDK 并转换流/错误 | `stream()`、`_get_client()`、`_translate_anthropic_error()` |
 | `src/jixue/llm/fake.py` | 模拟流式模型 | `FakeLLMClient.stream()` |
 | `config/models.yaml` | 可提交的三模型目录 | `default_model`、每个模型的 `llm` |
+| `src/jixue/bridge/bootstrap.py` | 合并系统环境与项目 `.env`，再按模式组装 LLM | `load_project_environment()`、`LLMRuntimeMode`、`create_runtime_llm()` |
 | `src/jixue/bridge/application.py` | 模型事件转 Bridge 事件 | `_handle_chat()` |
-| `src/jixue/bridge/server.py` | stdin/stdout 运输 | `run()`、`_write_event()` |
-| `apps/desktop/src/main/bridge-process.ts` | Node 与 Python 管道 | `sendChat()`、`consumeStdout()` |
+| `src/jixue/bridge/server.py` | 组装入口与 stdin/stdout 运输 | `main()`、`run()`、`_write_event()` |
+| `apps/desktop/src/main/bridge-process.ts` | Node 与 Python 管道、动态模型握手 | `start()`、`sendChat()`、`consumeLine()` |
 | `apps/desktop/src/main/index.ts` | IPC 校验和转发 | `registerIpc()`、`sendToRenderer()` |
 | `apps/desktop/src/preload/index.ts` | Renderer 安全白名单 | `api` 对象 |
 | `apps/desktop/src/shared/protocol.ts` | TypeScript 协议类型 | `BridgeEnvelope` |
@@ -1441,6 +1571,21 @@ conda run --no-capture-output -n mycoder python -m pytest tests/llm/test_anthrop
 
 答案：只检查最终文字，无法发现模型名、端点、缓存参数或 Key 传错；只检查请求参数，又无法证明文本流和最终用量转换正确。两边都测才能守住适配器的输入与输出。
 
+### 练习 7：比较 fake 和 configured 缺 Key
+
+先把 `.env` 模式设为 fake，运行 `npm run dev` 并记录握手模型和发送结果。关闭后，再按 13.2 节改成 configured 但保留空 Key，重新运行并记录结果。若你的文件中已有真实 Key，可以只阅读对照答案，不必为了练习清空它。
+
+对照答案：
+
+| 项目 | fake | configured 缺 Key |
+| --- | --- | --- |
+| 握手模型 | `fake-jixue` | `deepseek-v4-flash` |
+| 发送结果 | 固定流式回复 | `credentials_missing` |
+| 是否创建 Anthropic SDK 客户端 | 否 | 否，Key 检查先失败 |
+| 是否联网 | 否 | 否 |
+
+这个练习说明“选择了真实适配器”和“已经完成真实请求”是两个不同阶段。
+
 ## 17. 自测题与答案
 
 1. **用户按发送后，为什么用户气泡能立即出现？** 因为 Renderer 先 dispatch `request_started`，不等待 Python。
@@ -1465,18 +1610,25 @@ conda run --no-capture-output -n mycoder python -m pytest tests/llm/test_anthrop
 20. **SDK Message 为什么不能直接传给 Bridge？** 它是供应商类型，会让上层与 Anthropic 耦合；适配器只复制霁雪需要的文本、Token 和停止原因。
 21. **`cache_control` 已传入是否等于缓存已命中？** 不等于；还需要足够稳定的可缓存前缀和供应商返回的缓存用量证据。
 22. **限流错误为什么标记 `retryable=True`？** 限流通常是暂时状态，上层稍后可以重试；认证失败通常需要修改配置，原样重试没有意义。
-23. **现在点击 Electron 发送会调用 DeepSeek 吗？** 不会；Bridge 启动入口仍注入 FakeLLM，真实适配器尚未接管聊天链路。
+23. **现在点击 Electron 发送会调用 DeepSeek 吗？** 取决于项目 `.env`；只有最终模式为 configured 且 Key 有效，发送才会尝试真实请求。
+24. **为什么只有 DeepSeek Key、却没设置模式时仍不联网？** bootstrap 的默认模式固定为 fake，Key 本身不会偷偷改变运行模式。
+25. **`JIXUE_MODEL_ID=flash` 和 `deepseek-v4-flash` 有什么区别？** 前者是应用模型目录的稳定 ID，后者是最终传给 API 的模型名。
+26. **哪个函数把模式、目录和工厂串起来？** `bridge/bootstrap.py` 中的 `create_runtime_llm()`。
+27. **为什么 `.env` 由 Python bootstrap 读取，而不是 Renderer 读取？** Python 是可信进程边界并负责模型装配；Renderer 是网页环境，不应接触 API Key。
+28. **configured 缺 Key 为什么能显示模型名？** 模型名来自已校验目录；SDK 客户端延迟到真正发送时才创建并检查 Key。
+29. **`bridge.ready.payload.model` 到达 TypeScript 后为什么还要检查类型？** JSON 是运行时外部数据，TypeScript 编译期类型不能保证 Python 实际传来的值合法。
+30. **非法 `JIXUE_LLM_MODE` 为什么写 stderr 而不是 stdout？** stdout 专门承载 NDJSON，混入普通错误文本会破坏 Electron 的协议解析。
+31. **项目 `.env` 和系统环境里有同名变量时用哪个？** 使用项目 `.env`；`load_project_environment()` 先复制系统环境，再用项目文件覆盖同名值。
 
-如果第 1—8 题能用自己的话回答，你已经理解当前消息链路；第 9、10 题帮助区分“当前能力”和“未来设计”；第 11—15 题用于复盘配置加载；第 16—23 题用于复盘客户端工厂、流式适配器、缓存和错误边界。
+如果第 1—8 题能用自己的话回答，你已经理解当前消息链路；第 9、10 题帮助区分“当前能力”和“未来设计”；第 11—15 题用于复盘模型目录；第 16—23 题用于复盘客户端工厂、流式适配器、缓存和错误边界；第 24—31 题用于复盘 `.env`、Bridge 启动选择和安全边界。
 
 ## 18. 本章下一小步
 
 接下来按这个顺序继续，不进入工具系统：
 
-1. 把模型目录、客户端工厂和 Bridge 启动入口接起来，同时保留 FakeLLM 作为默认离线模式。
-2. 由用户在本机临时设置 Key，使用 DeepSeek Anthropic 端点完成一次真实流式手测。
-3. 实现内部消息与 API 消息两层模型。
-4. 实现 `ConversationManager.to_api_format()`，让第二次请求携带完整历史。
-5. 加入 Flash、Pro、Vision Exp 模型选择。
+1. 由用户在本机临时设置 Key，使用 DeepSeek Anthropic 端点完成一次真实流式手测。
+2. 实现内部消息与 API 消息两层模型。
+3. 实现 `ConversationManager.to_api_format()`，让第二次请求携带完整历史。
+4. 加入 Flash、Pro、Vision Exp UI 模型选择，不再依赖重启进程切换。
 
 每完成一步，本章都会增加该能力自己的推荐阅读顺序、端到端链路、输入输出示例、常见错误和手动验证方法。

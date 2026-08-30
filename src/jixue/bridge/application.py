@@ -36,7 +36,10 @@ class BridgeApplication:
                 {
                     "protocol_version": command.version,
                     "backend_version": __version__,
-                    "capabilities": ["fake_llm", "stream_text", "usage"],
+                    # model 让 Electron 显示真正被注入的客户端，不再把 FakeLLM 写死在 UI。
+                    "model": self._llm.model_name,
+                    # 能力描述保持供应商无关；Fake 与正式适配器都支持这两类事件。
+                    "capabilities": ["stream_text", "usage"],
                 },
             )
             return

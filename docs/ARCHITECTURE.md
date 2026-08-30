@@ -115,7 +115,7 @@ models:
 
 环境变量展开分成两种结果：字段结构正确且变量存在时为 `ready`；字段结构正确但 Key 对应变量缺失时为非致命 `credentials_missing`，允许 UI 启动但禁止发送该模型请求；字段缺失、协议未知、默认 ID 不存在或类型错误属于致命目录错误。
 
-以上规则已经由 `src/jixue/llm/config.py` 实现并可独立诊断。`src/jixue/llm/factory.py` 已经直接消费这里生成的 `LLMConfig`，不会重新读取 YAML；工厂可以创建 Anthropic 协议适配器。当前聊天链路仍使用 FakeLLM，配置/工厂尚未注入 Bridge 启动入口。
+以上规则已经由 `src/jixue/llm/config.py` 实现并可独立诊断。`src/jixue/llm/factory.py` 直接消费这里生成的 `LLMConfig`，不会重新读取 YAML；`src/jixue/bridge/bootstrap.py` 已把目录、工厂和 Bridge 启动入口接通。默认聊天仍使用 FakeLLM，只有显式 configured 模式才选择正式客户端。
 
 首版模型目录：
 
@@ -141,6 +141,33 @@ LLMClient.stream(prompt: str) -> AsyncIterator[LLMStreamEvent]
 `anthropic.AsyncAnthropic`、SDK 消息参数、流对象和 SDK 异常只能出现在 `llm/adapters/anthropic_client.py` 中。SDK 文本与最终 Message 必须先转换成 `LLMStreamEvent`，SDK 异常必须先转换成 `LLMClientError`，才能离开适配器。
 
 适配器使用顶层 `cache_control={"type": "ephemeral"}` 为未来稳定的多轮前缀准备 Prompt Cache。当前只有一条短用户文本，且领域 `Usage` 尚未保存缓存读写字段，因此不能把“参数已经传入”误写成“已经观察到缓存命中”。
+
+### 4.3 Bridge 运行模式
+
+模型选择发生在 Python Bridge 进程启动时，而不是 Renderer 中。启动装配会先复制 Python 进程环境，再读取“当前项目根目录/.env”并覆盖同名值。系统环境只作兜底，项目 `.env` 具有更高优先级。最终只使用两个领域语义明确的启动变量：
+
+| 环境变量 | 允许值 | 默认值 | 职责 |
+| --- | --- | --- | --- |
+| `JIXUE_LLM_MODE` | `fake`、`configured` | `fake` | 决定使用离线 FakeLLM，还是加载模型目录。 |
+| `JIXUE_MODEL_ID` | `flash`、`pro`、`vision_exp` | 目录的 `default_model` | configured 模式下选择稳定目录 ID。 |
+
+启动链路固定为：
+
+```text
+Electron Main 把 Python 工作目录固定为项目根目录
+  → Python Bridge server.main()
+  → bootstrap.create_runtime_llm(Path.cwd())
+  → load_project_environment()
+       先复制 os.environ
+       再读取“项目根目录/.env”并覆盖同名值
+  → fake: FakeLLMClient
+  → configured: models.yaml → ModelCatalog → create_llm_client()
+  → BridgeApplication
+  → bridge.ready 携带实际 model_name
+  → Electron 状态显示“实际模型 / Bridge 在线”
+```
+
+`.env` 不是 `.env.example`：前者是本地真实配置并被 Git 忽略，后者只是可提交模板。没有 `.env` 且系统环境也没设置模式时永远走 fake；单独存在 Key 也不会改变模式。configured 模式缺 Key 时仍能完成握手，第一次发送消息才返回 `credentials_missing`。非法模式、模型 ID 或目录结构属于启动装配错误，只写 stderr，不污染 stdout 的 NDJSON。
 
 ## 5. 消息模型
 

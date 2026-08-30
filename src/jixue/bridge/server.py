@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from pathlib import Path
 from typing import TextIO
 
 from jixue.bridge.application import BridgeApplication
+from jixue.bridge.bootstrap import BridgeBootstrapError, create_runtime_llm
 from jixue.domain.events import Envelope, ProtocolError
-from jixue.llm.fake import FakeLLMClient
 
 # 单条命令最多 1 MiB，避免没有换行的恶意或错误输入持续占用内存。
 MAX_LINE_BYTES = 1024 * 1024
@@ -125,7 +126,7 @@ class BridgeServer:
 
 
 def main() -> None:
-    """组装默认 FakeLLM 应用，并阻塞运行 BridgeServer 直到 stdin 关闭。"""
+    """组装运行时 LLM 应用，并阻塞运行 BridgeServer 直到 stdin 关闭。"""
 
     # Windows 终端默认编码不稳定，协议通道统一使用 UTF-8 和 LF。
     if hasattr(sys.stdin, "reconfigure"):
@@ -135,8 +136,18 @@ def main() -> None:
     if hasattr(sys.stderr, "reconfigure"):
         sys.stderr.reconfigure(encoding="utf-8", newline="\n")
 
-    # 依赖在最外层组装：应用层依赖 LLMClient，当前选择无需 Key 的 FakeLLM。
-    application = BridgeApplication(FakeLLMClient())
+    try:
+        # Path.cwd() 就是 Electron 传入的项目根目录；bootstrap 会优先读取这里的 .env。
+        # 没有 .env 或 configured 配置时仍得到 FakeLLM，首次启动不会意外访问网络。
+        llm = create_runtime_llm(Path.cwd())
+    except BridgeBootstrapError as error:
+        # 启动配置错误写 stderr，绝不能写 stdout，否则 Electron 会把它误当 NDJSON。
+        sys.stderr.write(f"Bridge 启动配置错误：{error}\n")
+        sys.stderr.flush()
+        raise SystemExit(2) from error
+
+    # 依赖只在最外层组装：应用层仍然只认识供应商无关的 LLMClient。
+    application = BridgeApplication(llm)
     server = BridgeServer(application, sys.stdin, sys.stdout, sys.stderr)
     # asyncio.run 创建事件循环、运行协程，并在结束后负责关闭事件循环。
     asyncio.run(server.run())

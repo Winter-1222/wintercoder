@@ -18,7 +18,8 @@ myAgent/
 ├─ scripts/              开发命令入口
 ├─ src/                  Python 主源码
 ├─ tests/                本地自动化测试，不提交
-├─ .env.example          环境变量示例
+├─ .env                  本机真实运行配置，不提交
+├─ .env.example          可复制的环境变量模板
 ├─ .gitignore            Git 忽略规则
 ├─ AGENTS.md             霁雪项目协作约定
 ├─ package.json          Node workspace 与根级命令
@@ -29,12 +30,13 @@ myAgent/
 
 | 文件 | 类型 | 职责 |
 | --- | --- | --- |
-| `.env.example` | 提交 | 只声明环境变量名称，不存放真实 API Key。 |
+| `.env` | 本地 | Python Bridge 从当前项目根目录主动读取的真实运行配置；同名值优先于系统环境变量，可能包含 Key，绝不提交。 |
+| `.env.example` | 提交 | 声明 configured 模式、模型 ID 和密钥变量的空值模板；复制为 `.env` 后才会被加载，本文件永远不存真实 Key。 |
 | `.gitignore` | 提交 | 排除依赖、构建产物、密钥、运行数据和本地测试。 |
 | `AGENTS.md` | 提交 | 约束注释语言、Conda 环境、SDK 边界、Git 和文档流程。 |
 | `package.json` | 提交 | 声明 npm workspace，并提供开发、构建、类型检查和本地测试命令。 |
 | `package-lock.json` | 提交 | 锁定 Electron/React 等 Node 依赖的完整版本树。 |
-| `pyproject.toml` | 提交 | 声明 Python 包、开发依赖以及 pytest、Ruff、Mypy 配置。 |
+| `pyproject.toml` | 提交 | 声明 Python 包、`anthropic`、`python-dotenv`、PyYAML、开发依赖以及 pytest、Ruff、Mypy 配置。 |
 | `README.md` | 提交 | 告诉开发者如何安装、启动、测试以及从哪里阅读文档。 |
 
 ## 2. `apps/desktop`：Electron 客户端
@@ -111,6 +113,7 @@ src/jixue/
 │  ├─ __init__.py
 │  ├─ __main__.py
 │  ├─ application.py
+│  ├─ bootstrap.py
 │  └─ server.py
 ├─ domain/
 │  ├─ __init__.py
@@ -164,8 +167,9 @@ src/jixue/
 | --- | --- | --- |
 | `bridge/__init__.py` | 提交 | 声明 Bridge 包。 |
 | `bridge/__main__.py` | 提交 | 支持 `python -m jixue.bridge` 启动服务。 |
-| `bridge/application.py` | 提交 | 处理 `bridge.hello` 和 `chat.send`，把 LLM 事件转成 UI 信封；把安全领域错误包装成可恢复的 `error` 信封。 |
-| `bridge/server.py` | 提交 | 异步读取 stdin、限制单行大小、串行写 stdout，并把日志送到 stderr。 |
+| `bridge/application.py` | 提交 | 处理 `bridge.hello` 和 `chat.send`，在握手中声明实际模型，把 LLM 事件转成 UI 信封，并把安全领域错误包装成可恢复的 `error` 信封。 |
+| `bridge/bootstrap.py` | 提交 | 用 `load_project_environment()` 合并系统环境与项目 `.env`（项目值优先），再按 fake/configured 和模型目录 ID 组装本进程唯一的 `LLMClient`。 |
+| `bridge/server.py` | 提交 | 异步读取 stdin、限制单行大小、串行写 stdout；启动时调用 bootstrap，配置错误只写 stderr。 |
 
 ## 4. `config`：可提交配置
 
@@ -191,6 +195,7 @@ src/jixue/
 | --- | --- |
 | `tests/domain/test_events.py` | 验证信封序列化、协议版本和错误输入。 |
 | `tests/bridge/test_application.py` | 验证握手、FakeLLM 流式顺序、Token、完成事件和领域错误信封。 |
+| `tests/bridge/test_bootstrap.py` | 验证默认离线、项目 `.env` 覆盖系统环境、configured 目录选择、缺 Key 可恢复错误和非法启动配置；不访问网络。 |
 | `tests/llm/test_config.py` | 验证默认三模型、缺 Key 降级、环境变量脱敏、本地覆盖和坏目录拒绝。 |
 | `tests/llm/test_anthropic_client.py` | 用本地假 SDK 流验证请求参数、事件顺序、延迟创建、客户端复用和类型化错误翻译；不访问网络。 |
 | `tests/test_architecture.py` | 防止领域层导入外部 SDK，并保证 `anthropic` 只能出现在适配器目录。 |

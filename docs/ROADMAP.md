@@ -1,12 +1,13 @@
 # 霁雪一周开发路线
 
-## 当前进度（2026-08-30）
+## 当前进度（2026-08-31）
 
 - 第 0 步工程基线：已完成并通过真实 Electron 进程回归。
 - 第一章 A 步 FakeLLM 流式界面：已完成。
-- 第一章 B 步四字段配置与模型目录加载：已完成并提交，尚未接入聊天链路。
-- 第一章 C 步 Anthropic SDK 适配器：源码和本地假 SDK 流测试已完成，尚未注入 Bridge。
-- 当前下一步：把配置、客户端工厂和 Bridge 接起来，保留 FakeLLM 默认入口，再由用户使用自己的 Key 完成一次真实 DeepSeek 手测。
+- 第一章 B 步四字段配置与模型目录加载：已完成并提交。
+- 第一章 C 步 Anthropic SDK 适配器：已完成、通过假 SDK 流测试并提交。
+- 第一章 D 步 Bridge 模型模式接线：已完成源码和本地无网络验证，尚未提交。
+- 当前下一步：由用户使用自己的 Key 完成一次真实 DeepSeek 流式手测，再实现 ConversationManager。
 - 尚未进入：真实 DeepSeek 网络验收、多轮历史、工具系统及后续章节。
 
 ## 1. 一周交付目标
@@ -59,7 +60,7 @@ Day 6 和 Day 7 风险最高。发布门槛分成两个明确层级：
 2. 创建 Python `src` 布局、`pyproject.toml`、pytest、类型检查和格式检查。
 3. 创建 Electron + React + TypeScript 项目，先显示空壳窗口。
 4. 实现最小 Python 子进程 Bridge，只处理 `bridge.hello`、`bridge.ready` 和协议级 `error`，暂不处理聊天。
-5. 写 `.env.example`，真实 Key 只从环境变量读取。
+5. 写 `.env.example`，由 Bridge 主动读取当前项目根目录的 `.env`；真实 Key 只放在被 Git 忽略的 `.env` 中。
 6. 建立章节文档目录和三类模板。
 7. 添加一条同时运行 Python 测试与前端测试的开发命令。
 

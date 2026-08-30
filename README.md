@@ -4,9 +4,9 @@
 
 所有章节教程默认面向几乎零基础的读者：先解释术语和推荐阅读顺序，再用一条真实运行链路把目录、文件和函数串起来，不要求读者预先掌握 Electron、React、Python 异步或 LLM SDK。
 
-当前已完成工程基线和第一章前三个小步：无需 API Key 的 `FakeLLM` 可以经过 Python NDJSON Bridge，把流式事件送到 Electron 界面；模型目录加载器可以读取默认 YAML、本地覆盖和环境变量，并生成严格的四字段 `LLMConfig`；Anthropic 协议适配器可以使用官方异步 SDK，把供应商文本流、Token 与停止原因转换成霁雪事件。界面会在流式阶段显示原始文本，收到完成事件后再渲染 Markdown，并展示模型名、Token 和耗时。
+当前已完成工程基线和第一章前四个小步：无需 API Key 的 `FakeLLM` 可以经过 Python NDJSON Bridge，把流式事件送到 Electron 界面；模型目录加载器可以读取默认 YAML、本地覆盖和环境变量，并生成严格的四字段 `LLMConfig`；Anthropic 协议适配器可以使用官方异步 SDK，把供应商文本流、Token 与停止原因转换成霁雪事件；Bridge 启动入口现在可以在默认 FakeLLM 和模型目录客户端之间显式选择。界面会在流式阶段显示原始文本，收到完成事件后再渲染 Markdown，并展示模型名、Token 和耗时。
 
-适配器已通过本地假 SDK 流和类型化异常测试，但还没有注入当前 Electron Bridge，也没有使用真实 Key 发起网络请求。真实 DeepSeek 手测、对话管理器和模型切换仍是第一章后续内容；默认启动继续使用免费、离线、确定性的 FakeLLM。
+Python Bridge 现在会主动读取项目根目录的 `.env`：文件里的同名值优先于系统环境变量。没有 `.env`，或其中选择 `JIXUE_LLM_MODE=fake` 时，继续使用免费、离线、确定性的 FakeLLM；选择 `configured` 时才从模型目录创建正式客户端。项目已经验证当前 `.env` 能装配出 `deepseek-v4-flash`，但自动化没有替用户发送真实付费请求。真实 DeepSeek 手测、对话管理器和 UI 模型切换仍是第一章后续内容。
 
 ## 开发基线
 
@@ -34,7 +34,15 @@ npm install
 npm run dev
 ```
 
-打开窗口并等到右上角出现“FakeLLM / Bridge 在线”，即可发送消息。当前链路只使用确定性的 FakeLLM，不访问网络，也不会产生模型费用。
+Python 会从运行项目的当前目录读取 `.env`，不是只读操作系统的全局环境变量。若文件不存在或模式为 `fake`，窗口会显示“fake-jixue / Bridge 在线”，发送不会访问网络；若 `.env` 中是 `configured` 且 Key 有效，窗口会显示所选真实模型，发送消息会访问模型服务并可能产生费用。
+
+第一次配置真实模型时，把 `.env.example` 复制为 `.env`，只在 `.env` 中填写 Key：
+
+```powershell
+Copy-Item .env.example .env
+```
+
+`.env` 已被 Git 忽略；不要把真实 Key 写入 `.env.example`、`models.yaml`、测试或聊天消息。
 
 不启动 UI、只检查三模型配置：
 

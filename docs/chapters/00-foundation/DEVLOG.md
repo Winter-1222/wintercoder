@@ -57,7 +57,7 @@
 ### 验证
 
 - 自动化测试：Python 11 项通过，前端 2 项通过；Ruff、Mypy、TypeScript 类型检查和 Electron 构建通过。
-- 手动测试：Electron 启动后显示 `FakeLLM / Bridge 在线`；关闭应用后 Bridge 随之退出。
+- 手动测试：Electron 启动后显示 `fake-jixue / Bridge 在线`；关闭应用后 Bridge 随之退出。
 - 已知限制：Bridge 当前只有单进程本地通信；没有重启退避和日志文件轮转。
 
 ### Git

@@ -16,7 +16,7 @@
 完成这一章后，你应该能看到：
 
 1. 执行 `npm run dev` 后出现霁雪窗口。
-2. 左下角先显示正在连接，随后变成“FakeLLM / Bridge 在线”。
+2. 左下角先显示正在连接，随后变成“fake-jixue / Bridge 在线”。
 3. 关闭窗口时 Python 一起退出，不出现 JavaScript 错误弹窗。
 
 这一章还没有处理用户聊天。聊天消息的完整链路放在第 1 章。
@@ -126,7 +126,7 @@ npm run dev
 
 1. 最初是“正在连接 Python Bridge”。
 2. Python 启动并处理握手命令。
-3. 状态变成“FakeLLM / Bridge 在线”。
+3. 状态变成“fake-jixue / Bridge 在线”。
 
 这个变化就是本章要理解的“启动握手”。
 
@@ -149,7 +149,7 @@ Python 返回 bridge.ready
         ↓
 Electron 把 ready 状态转发给 Renderer
         ↓
-React 更新左下角：FakeLLM / Bridge 在线
+React 更新左下角：fake-jixue / Bridge 在线
 ```
 
 接下来逐步展开这张图。
@@ -370,7 +370,7 @@ window.jixue.onBridgeState((bridgeState) => {
 })
 ```
 
-`dispatch` 把动作交给 `state.ts` 中的 `chatReducer()`。reducer 返回新状态，React 自动重新渲染，于是左下角从“正在连接”变成“FakeLLM / Bridge 在线”。
+`dispatch` 把动作交给 `state.ts` 中的 `chatReducer()`。reducer 返回新状态，React 自动重新渲染，于是左下角从“正在连接”变成“fake-jixue / Bridge 在线”。这个模型名来自 Python 的 `bridge.ready.payload.model`，不是 React 写死的文本。
 
 到这里，一次完整握手结束。
 

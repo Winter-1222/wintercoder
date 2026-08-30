@@ -38,6 +38,8 @@ export class PythonBridge {
   private readonly stateListeners = new Set<StateListener>()
   /** 区分“用户正常退出”与“Python 意外崩溃”，两者给 UI 的提示不同。 */
   private stopping = false
+  /** Python 握手声明的实际模型名；发送命令时一并带回，方便后续做模型路由校验。 */
+  private activeModelName = 'unknown'
 
   /** projectRoot 用于设置 Python 工作目录并构造 PYTHONPATH。 */
   constructor(private readonly projectRoot: string) {}
@@ -73,6 +75,8 @@ export class PythonBridge {
     }
 
     this.stopping = false
+    // 每次启动都等待新的 bridge.ready，不能沿用上一个 Python 进程的模型名。
+    this.activeModelName = 'unknown'
     this.setState('starting', '正在唤醒 Python Bridge')
 
     // 把项目 src 加到 PYTHONPATH，Python 才能在未安装或开发模式下导入 jixue。
@@ -132,7 +136,8 @@ export class PythonBridge {
 
   /**
    * 把一条用户文本包装成 chat.send 命令并写给 Python。
-   * 当前 session_id 和 model_id 还是第一章占位值，后续由会话管理和模型选择替换。
+   * 当前 session_id 仍是第一章占位值；model_id 使用握手得到的实际模型名。
+   * 本小步的模型选择发生在 Python 进程启动时，后续 UI 模型选择会再升级协议。
    */
   sendChat(requestId: string, text: string): void {
     if (this.state.status !== 'ready') {
@@ -149,7 +154,7 @@ export class PythonBridge {
       payload: {
         session_id: 'session_dev',
         text,
-        model_id: 'fake'
+        model_id: this.activeModelName
       }
     })
   }
@@ -239,8 +244,14 @@ export class PythonBridge {
       }
 
       if (parsed.type === 'bridge.ready') {
+        // 跨进程 payload 仍是不可信数据，必须运行时检查，不能只相信 TypeScript 类型。
+        const model = parsed.payload.model
+        if (typeof model !== 'string' || model.trim().length === 0) {
+          throw new Error('bridge.ready 缺少有效模型名')
+        }
+        this.activeModelName = model
         // ready 是握手完成标志；只有这之后 sendChat() 才允许写业务命令。
-        this.setState('ready', 'FakeLLM / Bridge 在线')
+        this.setState('ready', `${model} / Bridge 在线`)
       }
       // Bridge 自己不消费聊天事件，只把统一信封广播给 Main 的监听器。
       for (const listener of this.eventListeners) {

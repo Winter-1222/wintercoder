@@ -35,7 +35,7 @@ npm install
   1. 执行 `npm run dev`。
   2. 等待窗口打开。
   3. 观察右上角 Python Bridge 状态。
-- 预期结果：状态从启动中变成“FakeLLM / Bridge 在线”，窗口没有白屏或控制台错误。
+- 预期结果：状态从启动中变成“fake-jixue / Bridge 在线”，窗口没有白屏或控制台错误。
 - 实际结果：Bridge 正常上线，界面显示空状态和可用输入框。
 - 结论：通过。
 

@@ -217,7 +217,7 @@
   → LLMStreamEvent(COMPLETE)
 ```
 
-这条链路验证的是适配器本身。当前 `BridgeServer` 启动时仍注入 FakeLLM，所以在 Electron 中点击发送不会调用 DeepSeek。
+这条链路验证的是适配器本身。**在 C 步完成当时**，`BridgeServer` 启动仍注入 FakeLLM；后续 D 步已经加入 fake/configured 启动选择。
 
 ### 遇到的问题
 
@@ -266,10 +266,200 @@
 ### Git
 
 - B 步已经提交：`fbcbfec feat(llm): 增加四字段模型配置加载`。
-- C 步按约定保持未提交，等待用户阅读、启动和手动测试。
+- C 步已经提交：`c6e13ef feat(llm): 封装 Anthropic 流式适配器`。
+
+## C 步结束时记录的下一小步（当前已推进第 1 项）
+
+1. 给 Bridge 启动入口增加明确的模型模式选择，同时保留 FakeLLM 默认值：已完成。
+2. 用户确认后在本机临时设置 Key，完成一次真实 DeepSeek 流式手测。
+3. 实现内部/API 两层消息和 `ConversationManager.to_api_format()`。
+
+## 2026-08-31：D 步 Bridge 模型模式接线
+
+### 目标
+
+- 把模型目录、客户端工厂和 Bridge 启动入口连成真实可运行链路。
+- 默认继续使用 FakeLLM，不能因为电脑里碰巧有 Key 就自动联网。
+- configured 缺 Key 时允许握手，在真正发送时返回清楚、可恢复的错误。
+- 让 Electron 显示 Python 实际注入的模型，而不是把 FakeLLM 状态写死。
+
+### 实际改动
+
+- 新增 `src/jixue/bridge/bootstrap.py`，集中读取 `JIXUE_LLM_MODE` 和 `JIXUE_MODEL_ID`。
+- `fake` 模式直接创建 `FakeLLMClient`；`configured` 模式读取目录、选择模型并调用 `create_llm_client()`。
+- `server.main()` 不再直接写死 FakeLLM，而是在最外层调用 bootstrap 注入 `LLMClient`。
+- 非法模式、模型 ID 或目录错误统一包装为 `BridgeBootstrapError`，只写 stderr 后退出。
+- `bridge.ready` 增加 `payload.model`，声明当前客户端的真实 `model_name`。
+- Electron Main 对 model 做运行时校验，保存为 `activeModelName`，状态显示“实际模型 / Bridge 在线”。
+- `chat.send.payload.model_id` 使用握手取得的模型名，不再固定写成 `fake`。
+- D 步初版给 `.env.example` 增加模式和模型 ID 说明，但当时还没有实现 `.env` 自动加载；这个缺口已在后面的“D 步修订”中补上。
+- 新增本地 bootstrap 测试，覆盖默认离线、目录默认模型、Pro 选择、缺 Key 和非法配置。
+
+### 启动链路
+
+```text
+PowerShell 环境变量
+  → Electron Main process.env
+  → Python 子进程 os.environ
+  → server.main()
+  → create_runtime_llm(Path.cwd())
+  ├─ fake → FakeLLMClient
+  └─ configured
+       → models.yaml
+       → ModelCatalog
+       → 选择 JIXUE_MODEL_ID 或 default_model
+       → create_llm_client()
+       → AnthropicLLMClient
+  → BridgeApplication
+  → bridge.ready(model=实际模型名)
+  → Electron 状态栏
+```
+
+### 遇到的问题
+
+#### Electron 状态文本把 FakeLLM 写死
+
+- 现象：即使 Python 注入正式客户端，Main 收到 `bridge.ready` 后仍显示“FakeLLM / Bridge 在线”。
+- 原因：旧实现只把 ready 当布尔信号，没有让 Python 声明当前模型。
+- 修复：握手 payload 增加 model；Electron 运行时检查非空字符串后保存并显示。
+- 复盘：状态应来自事实发生的那一层。模型由 Python 注入，就应由 Python 握手声明，不能让 UI 猜。
+
+#### D 步初版的 `.env` 认知落差（随后已修复）
+
+- 现象：只修改 `.env.example` 不会影响 Electron 子进程。
+- 原因：项目没有引入 dotenv；该文件从一开始只是“变量名称示例”。
+- 初版处理：文件和教程曾写成“不会自动加载”，要求在启动 npm 的同一个 PowerShell 中设置变量。
+- 后续判断：这虽然解释了现象，却不符合本项目希望的本地配置体验，也给初学者增加了不必要的终端环境知识。
+- 最终修复：Bridge 主动读取项目根目录 `.env`，`.env.example` 只作为复制模板。
+- 复盘：文档不能替代缺失的产品能力。用户合理期待项目读取 `.env` 时，应补齐明确、可测试的加载链路。
+
+### 设计取舍
+
+- 选择 `fake/configured`，而不是把模式命名为 `fake/deepseek`。
+- 原因：模式表达领域语义；以后换供应商时 configured 仍然成立，不必修改 Electron 启动协议。
+- 选择进程启动时选模型，暂不提前实现 UI 下拉框。
+- 原因：本小步只验证配置到客户端的接线；UI 动态切换需要会话与模型路由设计，应单独完成。
+- 选择 configured 缺 Key 时完成握手。
+- 原因：目录与适配器组装本身是成功的，缺凭据属于发送前可补救状态；延迟创建保证不会误联网。
+- 选择非法模式和损坏目录为启动错误。
+- 原因：这类结构问题无法靠重试同一条消息修复，应在最靠近启动配置的位置明确拒绝。
+
+### `Codex-api` 技能怎样影响实现
+
+- bootstrap 和 Electron 只选择霁雪自己的 `LLMClient`，没有新增任何 SDK 导入。
+- 真实请求仍只通过官方 Anthropic SDK 适配器，并继续携带提示缓存参数。
+- 本小步使用缺 Key 和本地假对象验证边界，没有用原始 HTTP 或兼容层绕过适配器。
+
+### 验证
+
+- bootstrap 与 Bridge 定向测试 11 项通过。
+- Ruff、Mypy（16 个 Python 源文件）和 TypeScript 类型检查通过。
+- 完整 Python 33 项、前端 2 项通过。
+- 真实 Electron 构建、`fake-jixue` 动态握手、FakeLLM 消息和无错误退出回归通过。
+- 默认真实 Python 子进程握手返回 `model=fake-jixue`。
+- configured 且明确无 Key 的真实 Python 子进程握手返回 `model=deepseek-v4-flash`；发送消息返回 `credentials_missing`，进程保持正常。
+- 非法模式只输出一条中文 stderr 错误，没有 Python traceback，也没有污染 stdout。
+- 尚未使用真实 Key，没有真实网络调用或模型费用。
+
+### Git
+
+- C 步提交：`c6e13ef feat(llm): 封装 Anthropic 流式适配器`。
+- D 步按约定保持未提交，等待用户启动和手动测试。
+
+## 2026-08-31：D 步修订——项目根目录 `.env` 自动加载
+
+### 用户发现的问题
+
+- 用户已经在当前项目根目录新增 `.env`。
+- 文件中 `JIXUE_LLM_MODE=configured`、`JIXUE_MODEL_ID=flash` 和 `DEEPSEEK_API_KEY` 均已设置。
+- 启动后仍显示 `fake-jixue`。
+
+### 根因
+
+`create_runtime_llm()` 当时直接读取 `os.environ`。Electron 虽然会把自己的系统环境传给
+Python 子进程，但没有任何代码打开项目 `.env`。因此“文件存在”和“进程里有变量”是两
+件不同的事，用户写入文件的内容根本没有进入模型目录加载器。
+
+旧链路：
+
+```text
+项目 .env（没人读取，到这里断了）
+
+系统环境 → Electron → Python os.environ → create_runtime_llm()
+```
+
+### 修复后的链路
+
+```text
+Electron 把 Python cwd 固定为项目根目录
+  → server.main()
+  → create_runtime_llm(Path.cwd())
+  → load_project_environment(project_root)
+       1. 复制 os.environ 作为兜底
+       2. 用 python-dotenv 读取 project_root/.env
+       3. .env 覆盖同名系统变量
+  → JIXUE_LLM_MODE=configured
+  → models.yaml 展开 DEEPSEEK_API_KEY
+  → AnthropicLLMClient(model=deepseek-v4-flash)
+```
+
+### 实际改动
+
+- `pyproject.toml` 显式增加 `python-dotenv` 运行依赖，不能只依赖其他包偶然间接安装它。
+- `bootstrap.py` 新增 `load_project_environment()`，逐步注释复制、读取、覆盖和空值归一化。
+- 使用 `dotenv_values()` 返回局部字典，不修改全局 `os.environ`，避免配置污染测试或其他模块。
+- 关闭 dotenv 自带的 `${VAR}` 插值；`models.yaml` 仍是唯一负责密钥占位符展开的地方。
+- `.env` 的同名值优先于系统环境；没有该文件时保留系统环境和 fake 默认值。
+- `.env.example` 改成可复制的 configured 模板；示例文件自身不会被加载，也永远不写真实 Key。
+- Electron 冒烟测试改用操作系统临时目录中的 fake `.env`，避免自动化读取用户 Key、调用真实模型或产生费用。
+- 新增本地测试：系统环境故意选择 fake，临时项目 `.env` 选择 configured + pro，最终必须得到 `deepseek-v4-pro`。
+
+### 为什么项目 `.env` 优先
+
+用户明确希望“这个项目用这个文件”。如果系统里残留旧的 `JIXUE_LLM_MODE=fake`，却能
+盖住当前项目的 configured 配置，就会再次出现“明明写了却不生效”。因此优先级固定为：
+
+```text
+项目根目录 .env > 系统环境变量 > 代码默认值
+```
+
+这里仍保留系统环境兜底，方便 CI 或高级用户在没有 `.env` 的环境启动；但日常开发只需
+看当前项目文件，不必猜某个 PowerShell 或 Windows 全局变量里还残留什么。
+
+### 安全边界
+
+- 没有读取或打印用户 Key，只检查变量名、是否非空以及最终客户端类型/模型名。
+- `.env` 已被 `.gitignore` 排除，`git status` 和提交都不会包含它。
+- 自动化测试使用固定假 Key 或 fake 临时配置，不读取工作区真实 `.env`。
+- 创建 `AnthropicLLMClient` 不会联网；只有用户在 UI 主动发送消息才会发起真实请求。
+
+### 本轮已完成的验证
+
+- `tests/bridge/test_bootstrap.py`：7 项通过。
+- Ruff：`bootstrap.py`、`server.py` 和 bootstrap 测试通过。
+- Mypy 严格检查：上述 3 个文件无类型问题。
+- 只读装配当前项目配置：`client_type=AnthropicLLMClient`、`model_name=deepseek-v4-flash`。
+- 完整 Python：34 项通过；完整 Ruff 通过；Mypy 严格检查 16 个源码文件通过。
+- 前端 Vitest：2 项通过；TypeScript 类型检查通过。
+- 真实 Python Bridge 收到 `bridge.hello` 后返回 `bridge.ready.model=deepseek-v4-flash`。
+- Electron 构建和真实窗口回归通过；测试强制使用临时 FakeLLM 配置，聊天及无错误退出通过。
+- 以上装配检查没有调用 `stream()`，所以没有网络请求和模型费用。
+
+### 验证中遇到的 Windows 临时目录占用
+
+- 现象：Electron 界面测试和退出断言已经完成，但删除临时项目目录时第一次返回 `EBUSY`。
+- 原因：Windows 在 Python 子进程刚退出后仍可能短暂占用它之前的工作目录。
+- 修复：`fs.rm()` 增加 5 次、每次间隔 200 毫秒的有限重试；只作用于 `mkdtemp()` 创建的专用目录。
+- 复测：Electron 端到端测试完整通过，临时目录成功清理。
+- 复盘：端到端测试的“通过”还包括资源回收。临时目录必须隔离真实 `.env`，清理又要考虑 Windows 文件锁的释放窗口。
+
+### Git
+
+- 本修订与尚未提交的 D 步放在一起。
+- 按用户约定，本轮完成后不自动提交，先交给用户启动和手动测试。
 
 ## 当前下一小步
 
-1. 给 Bridge 启动入口增加明确的模型模式选择，同时保留 FakeLLM 默认值。
-2. 用户确认后在本机临时设置 Key，完成一次真实 DeepSeek 流式手测。
-3. 实现内部/API 两层消息和 `ConversationManager.to_api_format()`。
+1. 用户直接使用项目 `.env` 启动 Electron，完成一次真实 DeepSeek Flash 流式手测。
+2. 实现内部/API 两层消息与 `ConversationManager.to_api_format()`。
+3. 在 ConversationManager 稳定后增加 UI 三模型选择。
