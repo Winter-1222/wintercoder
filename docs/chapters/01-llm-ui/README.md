@@ -2,7 +2,7 @@
 
 > 适合读者：几乎零基础，已经知道第 0 章中的 Renderer、Preload、Main、Python Bridge 分别是什么。
 
-> 当前进度：本章已完成 FakeLLM 流式链路和独立模型配置加载。真实 DeepSeek、完整多轮历史和 UI 模型选择还没有实现，后文会明确区分“现在已有”和“以后再做”。
+> 当前进度：本章已完成 FakeLLM 流式链路、独立模型配置加载和 Anthropic 协议适配器。适配器已用本地假 SDK 验证，但尚未接入 Electron，也没有发起真实 DeepSeek 请求；完整多轮历史和 UI 模型选择仍未实现。后文会一直明确区分“源码已写”“本地已测”“真实网络已验收”。
 
 ## 1. 本章最终要回答的问题
 
@@ -45,8 +45,10 @@
 2. 解释 `request_id`、`sequence` 和 `message_id` 的区别。
 3. 解释为什么一个回复会产生很多 `stream_text` 事件。
 4. 解释为什么生成中显示纯文本，完成后才渲染 Markdown。
-5. 知道当前 FakeLLM 和以后真实 DeepSeek 的替换位置。
+5. 知道当前 FakeLLM、已经写好的 Anthropic 适配器和以后真实 DeepSeek 请求分别位于哪一层。
 6. 解释 `models.yaml` 怎样变成只有四个字段的 `LLMConfig`。
+7. 解释一段 SDK 文本流怎样变成霁雪的文本、用量和完成事件。
+8. 解释为什么 SDK 异常不能直接交给 Bridge 或 React。
 
 ## 2. 推荐阅读顺序
 
@@ -78,7 +80,7 @@
 | 12 | 回到 `App.tsx` | `handleBridgeEvent()`、`MessageView` | 文本怎样显示并最终变成 Markdown？ |
 | 13 | 回到 `state.ts` | `text_received`、`request_completed` | 每个事件怎样修改 UI 状态？ |
 
-配置加载目前还没有插入上面这条聊天链路，所以第二轮读完消息后，再单独按这个顺序阅读：
+配置加载和真实适配器目前还没有插入上面这条 Electron 聊天链路，所以第二轮读完 FakeLLM 消息后，再单独按这个顺序阅读：
 
 | 顺序 | 文件 | 重点位置 | 只回答什么问题 |
 | --- | --- | --- | --- |
@@ -86,6 +88,10 @@
 | 2 | `src/jixue/llm/config.py` | `load_model_catalog()` | 默认文件、本地覆盖和环境变量怎样汇合？ |
 | 3 | 同一文件 | `_parse_catalog()`、`_parse_llm_config()` | 普通字典怎样经过校验变成领域对象？ |
 | 4 | 同一文件 | `LLMConfig` | 为什么真正的适配器最终只看到四个字段？ |
+| 5 | `src/jixue/llm/factory.py` | `create_llm_client()` | `protocol` 怎样决定选择哪个适配器？ |
+| 6 | `src/jixue/llm/adapters/anthropic_client.py` | `stream()` | SDK 文本流怎样变成霁雪事件？ |
+| 7 | 同一文件 | `_get_client()`、`_translate_anthropic_error()` | 为什么延迟创建客户端，SDK 错误又怎样变安全？ |
+| 8 | `src/jixue/bridge/application.py` | 两个 `except` 分支 | 领域错误怎样变成 UI 能理解的错误信封？ |
 
 ### 第三轮：带着问题读
 
@@ -96,6 +102,9 @@
 3. 搜索 `turn_complete`，找到 Markdown 从纯文本切换到渲染态的位置。
 4. 搜索 `request_id`，观察它怎样贯穿整个请求。
 5. 搜索 `load_model_catalog`，观察配置入口和每一层校验函数。
+6. 搜索 `create_llm_client`，观察协议选择只出现在哪一层。
+7. 搜索 `import anthropic`，确认它只出现在适配器文件。
+8. 搜索 `cache_control`，找到提示缓存参数真正进入 SDK 请求的位置。
 
 跨语言项目最有效的阅读方法通常不是“按目录从头看”，而是跟踪同一个协议字段或事件类型。
 
@@ -785,6 +794,8 @@ assistant.content += "霁雪"
 - 关闭窗口和回收 Bridge 真实运行。
 - 默认/本地 YAML 合并、环境变量展开和四字段配置校验真实运行。
 - Flash、Pro、Vision Exp 三条目录记录能够被真实加载；缺 Key 会得到非致命状态。
+- Anthropic 适配器使用真实官方 SDK 接口和类型，但网络流由本地假 SDK 对象模拟。
+- SDK 请求参数、流式事件顺序、最终 Token、停止原因和常见类型化异常翻译已经自动验证。
 
 ### 当前仍然是模拟的部分
 
@@ -794,12 +805,14 @@ assistant.content += "霁雪"
 - `model_id` 目前固定为 `fake`。
 - 每次只把当前用户文本发给 FakeLLM，没有附带完整历史。
 - 左侧“新任务”目前只是界面占位，没有创建会话功能。
+- Electron Bridge 还没有从模型目录创建 `AnthropicLLMClient`，所以界面仍不会请求 DeepSeek。
+- 还没有用用户自己的 Key 做真实网络手测，也没有观察到真实 Prompt Cache 命中。
 
 因此现在连续发送两条消息，只证明“可以连续请求”，不代表第二次请求知道第一次聊过什么。真正多轮对话要等 `ConversationManager`。
 
 ## 12. 模型配置是怎么跑起来的
 
-这一节讲的是本章第二条完整链路。它和“你好”消息链路暂时是两条平行线：
+这一节讲的是本章第二条链路。配置、工厂和适配器已经连在代码层，但还没有接入 Electron 的默认启动入口：
 
 ```text
 现在的聊天：
@@ -808,11 +821,14 @@ Electron → Python Bridge → FakeLLM
 现在的配置检查：
 models.yaml → 配置加载器 → ModelCatalog → LLMConfig
 
-下一小步才会把两条线接起来：
-ModelCatalog → 客户端工厂 → AnthropicLLMClient → Python Bridge
+现在已经完成并用假 SDK 测试：
+LLMConfig → 客户端工厂 → AnthropicLLMClient → 霁雪流事件
+
+下一小步要接上的最后一段：
+ModelCatalog → 客户端工厂 → AnthropicLLMClient → Python Bridge 启动入口
 ```
 
-所以这一节已经是真实运行的代码，但它目前不会改变 Electron 中的 FakeLLM 回复。
+所以配置与适配器都是可运行源码，但 Electron 仍然注入 FakeLLM。这样的分步方式让我们可以先免费验证转换逻辑，再决定何时使用真实 Key。
 
 ### 12.1 先认识 YAML、目录和 dataclass
 
@@ -1128,7 +1144,7 @@ models:
 
 `pro` 条目必须完整；`flash` 和 `vision_exp` 没写，所以继续使用默认文件中的记录。调试完成后运行诊断命令确认最终结果，不要靠肉眼猜合并结果。
 
-### 12.15 真实 DeepSeek 接入后，哪里会变
+### 12.15 客户端工厂现在做了什么
 
 当前聊天核心调用仍是：
 
@@ -1136,24 +1152,119 @@ models:
 BridgeApplication(FakeLLMClient())
 ```
 
-下一小步会由配置和工厂创建 Anthropic 协议适配器，概念上变成：
+但 `src/jixue/llm/factory.py` 已经能够执行下面这段选择：
+
+```python
+def create_llm_client(config: LLMConfig) -> LLMClient:
+    if config.protocol == "anthropic":
+        return AnthropicLLMClient(config)
+    raise LLMClientError(...)
+```
+
+这里的“工厂”不是工厂建筑，而是“集中负责创建对象的函数”。它有两个好处：
+
+1. Bridge 不需要到处写 `if protocol == ...`。
+2. 以后增加另一种协议时，只改工厂和新适配器，上层继续使用 `LLMClient`。
+
+工厂只接收已经校验过的 `LLMConfig`。它不会再次读取 YAML，也不会自己读取环境变量。这就是“一个模块只做一件事”。
+
+### 12.16 一次假 SDK 文本流是怎么跑起来的
+
+本地测试不请求互联网。它创建一个“长得像 SDK 客户端”的假对象，把它注入 `AnthropicLLMClient`。完整链路如下：
+
+```text
+测试准备 LLMConfig
+  ↓
+创建 AnthropicLLMClient，并注入 FakeAsyncAnthropic 工厂
+  ↓
+调用 client.stream("你好")
+  ↓
+_get_client() 第一次创建并缓存假 SDK 客户端
+  ↓
+client.messages.stream(...) 收到 model/max_tokens/messages/cache_control
+  ↓
+async with 进入假流
+  ↓
+text_stream 依次给出多个文本片段
+  ↓
+每个非空片段变成 LLMStreamEvent(TEXT)
+  ↓
+await get_final_message() 取得最终 usage 和 stop_reason
+  ↓
+依次产生 LLMStreamEvent(USAGE) 和 LLMStreamEvent(COMPLETE)
+```
+
+把每一步展开：
+
+1. 测试创建四字段配置。测试 Key 只是字符串 `test-key`，不会离开内存。
+2. 构造函数先保存配置，不会立刻创建 SDK 客户端。这叫“延迟创建”。
+3. 当测试真正开始遍历 `stream()` 时，`_get_client()` 才检查 Key。
+4. 第一次调用会把 `api_key`、`base_url` 和 `max_retries=2` 明确传给客户端工厂。
+5. `messages` 当前只有一个 `{"role": "user", "content": "你好"}`；多轮历史要等 ConversationManager。
+6. `messages.stream()` 同时收到模型名、最大输出 Token 和提示缓存参数。
+7. `async for text in stream.text_stream` 一小段一小段读取新增文本，空片段被忽略。
+8. `yield TEXT` 把控制权临时交回上层，所以 UI 将来可以边收边显示，而不是等全部结束。
+9. 文本流消费完后，必须 `await stream.get_final_message()`。这里的 `await` 是等待异步结果，不是再请求一次模型。
+10. 最终 Message 中的供应商 Usage 被复制到霁雪自己的 `Usage`，SDK Message 本身不会离开适配器。
+11. 适配器先发 `USAGE`，再发 `COMPLETE`。Bridge 因此仍能沿用现在的状态栏和收口逻辑。
+
+对应的本地测试文件是 `tests/llm/test_anthropic_client.py`。它还会检查 SDK 客户端只创建一次，后续请求复用连接。
+
+### 12.17 Prompt Cache 在这里做了什么
+
+请求里有这一行：
+
+```python
+cache_control={"type": "ephemeral"}
+```
+
+可以先把 Prompt Cache 理解成“供应商暂时记住稳定的请求前缀”。后续请求如果带着相同的长前缀，供应商可能复用已经处理过的部分，减少重复计算。
+
+当前要诚实区分三件事：
+
+1. **已实现**：适配器把 `cache_control` 传给官方 SDK。
+2. **本地已验证**：假 SDK 测试断言参数确实存在，没有在封装层丢失。
+3. **尚未验证**：当前请求只有一条短文本，没有完整历史，`Usage` 也还没有缓存读写字段，所以我们不能声称真实缓存已经命中。
+
+ConversationManager 加入后，角色设定和较早的稳定对话会形成可复用前缀。届时再扩展 Usage，并用真实服务返回值确认缓存效果。
+
+### 12.18 SDK 错误怎样安全到达 UI
+
+如果 SDK 抛出 `AuthenticationError`，不能把整个 SDK 异常对象交给 Bridge。供应商错误可能包含请求、响应或不适合公开的细节。
+
+适配器按下面的链路处理：
+
+```text
+anthropic.AuthenticationError
+  ↓ _translate_anthropic_error()
+LLMClientError(
+  code="authentication_failed",
+  message="API Key 无效或已经失效，请检查模型认证配置",
+  retryable=False
+)
+  ↓ BridgeApplication 捕获
+Envelope(type="error", payload={code, message, retryable, scope})
+  ↓ Electron / React
+用户看到可操作提示，Bridge 进程继续运行
+```
+
+认证失败、权限不足、模型/端点不存在和坏请求默认不可重试；限流、超时、连接失败和服务端错误标记为可重试。这里的“可重试”是给上层决策的信息，当前版本不会擅自无限重试。
+
+真正不认识的程序异常由 Bridge 转成固定的 `llm_internal_error`，不会把 `repr(error)`、用户输入或 Key 回显到 UI。
+
+### 12.19 接入真实 DeepSeek 时，哪里会变
+
+下一小步会让 Bridge 启动入口根据配置选择客户端，概念上是：
 
 ```text
 catalog.get("flash").llm
-  ↓ 得到 LLMConfig
-LLMClientFactory.create(config)
-  ↓ protocol 是 anthropic
+  ↓
+create_llm_client(config)
+  ↓
 AnthropicLLMClient(config)
-  ↓ 注入 BridgeApplication
+  ↓
 BridgeApplication(client)
 ```
-
-适配器内部才允许导入 `anthropic` SDK，并负责：
-
-1. 用 `model/base_url/api_key` 创建 SDK 客户端。
-2. 把霁雪消息转换成 Anthropic API 请求。
-3. 把 SDK 流事件转换成 `LLMStreamEvent`。
-4. 把 SDK 异常转换成霁雪可以理解的错误。
 
 下面这些上层代码不应该改变：
 
@@ -1162,15 +1273,17 @@ BridgeApplication(client)
 - Main 和 Preload 仍然转发同一协议。
 - React reducer 仍然处理同一组 action。
 
-这就是封装供应商 SDK 的意义。
+这就是封装供应商 SDK 的意义。真实手测会由用户在本机临时设置 Key 后进行；Key 不写入 YAML、测试、日志或 Git。
 
-### 12.16 外部 API 信息从哪里核对
+### 12.20 外部 API 信息从哪里核对
 
 模型名称和端点会随服务更新，不能只依赖记忆。本步对照了 DeepSeek 官方资料：
 
 - [Models & Pricing](https://api-docs.deepseek.com/quick_start/pricing/)：列出 Flash、Pro、Vision Exp、1M 上下文和 Anthropic 端点。
 - [Using the Anthropic API](https://api-docs.deepseek.com/guides/anthropic_api/)：确认 `base_url` 和 Anthropic SDK 调用方式。
 - [Change Log](https://api-docs.deepseek.com/updates/)：确认 Vision Exp 的实验模型名。
+- [Anthropic Python SDK](https://github.com/anthropics/anthropic-sdk-python)：核对异步客户端、流式 helper 和类型化异常。
+- [Anthropic Prompt Caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)：理解自动缓存、稳定前缀和缓存用量。
 
 如果以后真实请求提示模型不存在，先重新查官方文档，再修改 `config/models.yaml`，不要先去改 React 或 reducer。
 
@@ -1232,6 +1345,10 @@ npm run test:electron
 | Token 不更新 | `usage` 事件链路 | Python 没发或 Renderer 没处理 usage |
 | 最后仍显示原始 `##` | `turn_complete` 链路 | 消息状态没有变成 complete |
 | 退出弹 JavaScript 错误 | `sendToRenderer()` 和 `stop()` | 向已销毁窗口发送或关闭竞态 |
+| 发送真实请求前提示 credentials_missing | `AnthropicLLMClient._get_client()` | 当前进程没有模型 Key |
+| 返回 authentication_failed | `_translate_anthropic_error()` | Key 无效、失效或端点认证不匹配 |
+| 假 SDK 测试卡在 final message | `await stream.get_final_message()` | 忘记等待异步方法，拿到的是协程而不是 Message |
+| 看不到缓存命中数字 | `cache_control` 与 `Usage` | 当前只传了缓存参数，尚未扩展缓存统计和真实多轮前缀 |
 
 排查原则：先确认数据最后成功到达了哪一层，再检查下一条箭头，不要同时修改所有层。
 
@@ -1241,6 +1358,8 @@ npm run test:electron
 | --- | --- | --- |
 | `src/jixue/llm/base.py` | 定义自己的模型接口 | `LLMClient`、`LLMStreamEvent` |
 | `src/jixue/llm/config.py` | 模型目录和四字段配置 | `load_model_catalog()`、`LLMConfig` |
+| `src/jixue/llm/factory.py` | 按协议创建模型客户端 | `create_llm_client()` |
+| `src/jixue/llm/adapters/anthropic_client.py` | 隔离官方 SDK 并转换流/错误 | `stream()`、`_get_client()`、`_translate_anthropic_error()` |
 | `src/jixue/llm/fake.py` | 模拟流式模型 | `FakeLLMClient.stream()` |
 | `config/models.yaml` | 可提交的三模型目录 | `default_model`、每个模型的 `llm` |
 | `src/jixue/bridge/application.py` | 模型事件转 Bridge 事件 | `_handle_chat()` |
@@ -1310,6 +1429,18 @@ conda run --no-capture-output -n mycoder python -m jixue.llm.config
 
 先不要设置 Key。确认三个模型仍然能加载，但状态都是 `credentials_missing`。思考：为什么“缺 Key”和“YAML 缺字段”不能都让整个程序直接退出？
 
+### 练习 6：观察假 SDK 适配器
+
+执行：
+
+```powershell
+conda run --no-capture-output -n mycoder python -m pytest tests/llm/test_anthropic_client.py -vv
+```
+
+它不会请求 DeepSeek，也不会产生费用。运行后打开测试文件，先找 `captured_calls`，再找对它的断言。尝试用自己的话回答：为什么我们既检查最终事件，也检查传给 SDK 的参数？
+
+答案：只检查最终文字，无法发现模型名、端点、缓存参数或 Key 传错；只检查请求参数，又无法证明文本流和最终用量转换正确。两边都测才能守住适配器的输入与输出。
+
 ## 17. 自测题与答案
 
 1. **用户按发送后，为什么用户气泡能立即出现？** 因为 Renderer 先 dispatch `request_started`，不等待 Python。
@@ -1327,15 +1458,23 @@ conda run --no-capture-output -n mycoder python -m jixue.llm.config
 13. **本地覆盖为什么整条替换，而不是只补一个 model 字段？** 整条替换能看清最终配置来自哪里，避免深合并把两份配置悄悄拼成一条。
 14. **为什么 `api_key` 设置了 `repr=False`？** 防止打印配置对象时把真实 Key 带进终端、日志或错误报告。
 15. **运行配置诊断命令会调用 DeepSeek 吗？** 不会；它只读文件、环境变量并构造本地 Python 对象。
+16. **为什么 `import anthropic` 只能写在适配器目录？** 因为供应商实现细节不能污染领域层；以后换协议时，Bridge、Agent Loop 和 UI 才不需要跟着改。
+17. **为什么构造 `AnthropicLLMClient` 时不立刻创建 SDK 客户端？** 延迟创建允许应用在没有 Key 时先启动，真正发送时再返回明确的凭据错误。
+18. **`text_stream` 产出的是什么？** 每次只产出新增的一小段文本，不是到目前为止的完整回复。
+19. **为什么 `get_final_message()` 前有 `await`？** 异步 SDK 需要等待流完全收口后才能取得最终 Message；不等待只会拿到协程对象。
+20. **SDK Message 为什么不能直接传给 Bridge？** 它是供应商类型，会让上层与 Anthropic 耦合；适配器只复制霁雪需要的文本、Token 和停止原因。
+21. **`cache_control` 已传入是否等于缓存已命中？** 不等于；还需要足够稳定的可缓存前缀和供应商返回的缓存用量证据。
+22. **限流错误为什么标记 `retryable=True`？** 限流通常是暂时状态，上层稍后可以重试；认证失败通常需要修改配置，原样重试没有意义。
+23. **现在点击 Electron 发送会调用 DeepSeek 吗？** 不会；Bridge 启动入口仍注入 FakeLLM，真实适配器尚未接管聊天链路。
 
-如果第 1—8 题能用自己的话回答，你已经理解当前消息链路；第 9、10 题帮助区分“当前能力”和“未来设计”；第 11—15 题用于复盘本次配置加载。
+如果第 1—8 题能用自己的话回答，你已经理解当前消息链路；第 9、10 题帮助区分“当前能力”和“未来设计”；第 11—15 题用于复盘配置加载；第 16—23 题用于复盘客户端工厂、流式适配器、缓存和错误边界。
 
 ## 18. 本章下一小步
 
 接下来按这个顺序继续，不进入工具系统：
 
-1. 在适配器内部接入 Anthropic SDK，并用假 SDK 流先测试转换。
-2. 使用 DeepSeek Anthropic 端点完成一次真实流式手测。
+1. 把模型目录、客户端工厂和 Bridge 启动入口接起来，同时保留 FakeLLM 作为默认离线模式。
+2. 由用户在本机临时设置 Key，使用 DeepSeek Anthropic 端点完成一次真实流式手测。
 3. 实现内部消息与 API 消息两层模型。
 4. 实现 `ConversationManager.to_api_format()`，让第二次请求携带完整历史。
 5. 加入 Flash、Pro、Vision Exp 模型选择。

@@ -4,9 +4,9 @@
 
 所有章节教程默认面向几乎零基础的读者：先解释术语和推荐阅读顺序，再用一条真实运行链路把目录、文件和函数串起来，不要求读者预先掌握 Electron、React、Python 异步或 LLM SDK。
 
-当前已完成工程基线和第一章前两个小步：无需 API Key 的 `FakeLLM` 可以经过 Python NDJSON Bridge，把流式事件送到 Electron 界面；模型目录加载器可以读取默认 YAML、本地覆盖和环境变量，并生成严格的四字段 `LLMConfig`。界面会在流式阶段显示原始文本，收到完成事件后再渲染 Markdown，并展示模型名、Token 和耗时。
+当前已完成工程基线和第一章前三个小步：无需 API Key 的 `FakeLLM` 可以经过 Python NDJSON Bridge，把流式事件送到 Electron 界面；模型目录加载器可以读取默认 YAML、本地覆盖和环境变量，并生成严格的四字段 `LLMConfig`；Anthropic 协议适配器可以使用官方异步 SDK，把供应商文本流、Token 与停止原因转换成霁雪事件。界面会在流式阶段显示原始文本，收到完成事件后再渲染 Markdown，并展示模型名、Token 和耗时。
 
-真实 DeepSeek 适配器、对话管理器和模型切换仍是第一章后续内容；配置已经能独立加载和检查，但还没有接管当前使用 FakeLLM 的聊天链路。
+适配器已通过本地假 SDK 流和类型化异常测试，但还没有注入当前 Electron Bridge，也没有使用真实 Key 发起网络请求。真实 DeepSeek 手测、对话管理器和模型切换仍是第一章后续内容；默认启动继续使用免费、离线、确定性的 FakeLLM。
 
 ## 开发基线
 

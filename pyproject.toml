@@ -9,6 +9,7 @@ description = "霁雪：轻量、可教学、可复盘的 Agent Harness"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "anthropic>=0.120,<1",
     "PyYAML>=6,<7",
 ]
 

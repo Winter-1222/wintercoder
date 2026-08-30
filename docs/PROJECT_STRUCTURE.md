@@ -117,9 +117,13 @@ src/jixue/
 │  ├─ events.py
 │  └─ messages.py
 ├─ llm/
+│  ├─ adapters/
+│  │  ├─ __init__.py
+│  │  └─ anthropic_client.py
 │  ├─ __init__.py
 │  ├─ base.py
 │  ├─ config.py
+│  ├─ factory.py
 │  └─ fake.py
 └─ __init__.py
 ```
@@ -144,12 +148,15 @@ src/jixue/
 
 | 文件 | 类型 | 职责 |
 | --- | --- | --- |
-| `llm/__init__.py` | 提交 | 导出 LLM 接口和 FakeLLM。 |
-| `llm/base.py` | 提交 | 定义供应商无关的 `LLMClient` Protocol 与流事件。 |
+| `llm/__init__.py` | 提交 | 导出 LLM 接口、领域错误和 FakeLLM，调用方不必知道各文件位置。 |
+| `llm/base.py` | 提交 | 定义供应商无关的 `LLMClient` Protocol、流事件和可安全公开的 `LLMClientError`。 |
 | `llm/config.py` | 提交 | 安全读取默认/本地 YAML、展开环境变量、校验模型目录，并生成严格四字段 `LLMConfig`；也提供只读诊断入口。 |
+| `llm/factory.py` | 提交 | 根据 `LLMConfig.protocol` 选择适配器；未知协议返回领域错误，不让上层写供应商分支。 |
 | `llm/fake.py` | 提交 | 产生确定性 Markdown 文本、Token 和完成事件，用于离线开发。 |
+| `llm/adapters/__init__.py` | 提交 | 声明供应商适配器边界，提醒上层不能从这里取出 SDK 类型。 |
+| `llm/adapters/anthropic_client.py` | 提交 | 唯一允许导入 `anthropic` 的正式源码；创建异步客户端、消费文本流、读取最终用量、启用提示缓存并翻译 SDK 异常。 |
 
-真实 `anthropic` SDK 将来只能出现在本目录的适配器子目录中，不能进入 `base.py`。
+真实 `anthropic` SDK 现在只出现在 `llm/adapters` 子目录中。`tests/test_architecture.py` 会扫描整个 Python 源码，防止以后误把 SDK 导入 Bridge、领域层或工厂。
 
 ### `bridge`：进程协议入口
 
@@ -157,7 +164,7 @@ src/jixue/
 | --- | --- | --- |
 | `bridge/__init__.py` | 提交 | 声明 Bridge 包。 |
 | `bridge/__main__.py` | 提交 | 支持 `python -m jixue.bridge` 启动服务。 |
-| `bridge/application.py` | 提交 | 处理 `bridge.hello` 和 `chat.send`，把 LLM 事件转成 UI 信封。 |
+| `bridge/application.py` | 提交 | 处理 `bridge.hello` 和 `chat.send`，把 LLM 事件转成 UI 信封；把安全领域错误包装成可恢复的 `error` 信封。 |
 | `bridge/server.py` | 提交 | 异步读取 stdin、限制单行大小、串行写 stdout，并把日志送到 stderr。 |
 
 ## 4. `config`：可提交配置
@@ -183,9 +190,10 @@ src/jixue/
 | 文件 | 职责 |
 | --- | --- |
 | `tests/domain/test_events.py` | 验证信封序列化、协议版本和错误输入。 |
-| `tests/bridge/test_application.py` | 验证握手、FakeLLM 流式顺序、Token 和完成事件。 |
+| `tests/bridge/test_application.py` | 验证握手、FakeLLM 流式顺序、Token、完成事件和领域错误信封。 |
 | `tests/llm/test_config.py` | 验证默认三模型、缺 Key 降级、环境变量脱敏、本地覆盖和坏目录拒绝。 |
-| `tests/test_architecture.py` | 防止领域层导入 Anthropic、Electron 或 MCP SDK。 |
+| `tests/llm/test_anthropic_client.py` | 用本地假 SDK 流验证请求参数、事件顺序、延迟创建、客户端复用和类型化错误翻译；不访问网络。 |
+| `tests/test_architecture.py` | 防止领域层导入外部 SDK，并保证 `anthropic` 只能出现在适配器目录。 |
 | `tests/ui/smoke_renderer.py` | 用本机 Chrome 和 Mock Bridge 检查真实 Renderer 布局、交互和控制台。 |
 | `tests/ui/smoke_electron.mjs` | 启动真实 Electron，覆盖 Main、Preload、Bridge、Renderer，并检查退出错误。 |
 

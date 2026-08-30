@@ -3,7 +3,13 @@
 上层可从 jixue.llm 导入自己的接口和 FakeLLM，不需要知道它们分别放在哪个文件。
 """
 
-from jixue.llm.base import LLMClient, LLMEventType, LLMStreamEvent
+from jixue.llm.base import LLMClient, LLMClientError, LLMEventType, LLMStreamEvent
 from jixue.llm.fake import FakeLLMClient
 
-__all__ = ["FakeLLMClient", "LLMClient", "LLMEventType", "LLMStreamEvent"]
+__all__ = [
+    "FakeLLMClient",
+    "LLMClient",
+    "LLMClientError",
+    "LLMEventType",
+    "LLMStreamEvent",
+]

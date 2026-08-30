@@ -13,7 +13,7 @@ from uuid import uuid4
 
 from jixue import __version__
 from jixue.domain.events import Envelope
-from jixue.llm.base import LLMClient, LLMEventType
+from jixue.llm.base import LLMClient, LLMClientError, LLMEventType
 
 
 class BridgeApplication:
@@ -113,14 +113,24 @@ class BridgeApplication:
                             "message_id": message_id,
                         },
                     )
-        except Exception as exc:
-            # FakeLLM 不应失败；这个边界保证未来适配器异常不会污染协议通道。
+        except LLMClientError as error:
+            # 适配器已经把 SDK 异常翻译成安全的领域错误，Bridge 只负责协议包装。
             yield self._error(
                 command.request_id,
-                "llm_stream_failed",
-                f"模型流式响应失败：{exc}",
+                error.code,
+                str(error),
                 scope="request",
-                retryable=True,
+                retryable=error.retryable,
+                sequence=sequence,
+            )
+        except Exception:
+            # 未预期异常不把 repr 或请求内容回显给 UI，避免意外泄露敏感数据。
+            yield self._error(
+                command.request_id,
+                "llm_internal_error",
+                "模型客户端发生未预期错误，请查看后端日志",
+                scope="request",
+                retryable=False,
                 sequence=sequence,
             )
 

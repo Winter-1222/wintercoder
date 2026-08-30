@@ -14,6 +14,21 @@ from typing import Protocol
 from jixue.domain.messages import Usage
 
 
+class LLMClientError(RuntimeError):
+    """所有具体模型适配器向上层报告错误时使用的领域异常。
+
+    Bridge 只能看到稳定的 `code/message/retryable`，不能看到 Anthropic 的异常类。
+    `message` 必须适合直接展示给用户，不能包含 API Key、完整请求或响应正文。
+    """
+
+    def __init__(self, code: str, message: str, *, retryable: bool) -> None:
+        """保存机器可判断的错误码、人类可读消息和是否建议重试。"""
+
+        super().__init__(message)
+        self.code = code
+        self.retryable = retryable
+
+
 class LLMEventType(StrEnum):
     """第一章需要的最小 LLM 流事件。"""
 

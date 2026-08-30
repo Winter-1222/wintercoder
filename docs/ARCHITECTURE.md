@@ -115,7 +115,7 @@ models:
 
 环境变量展开分成两种结果：字段结构正确且变量存在时为 `ready`；字段结构正确但 Key 对应变量缺失时为非致命 `credentials_missing`，允许 UI 启动但禁止发送该模型请求；字段缺失、协议未知、默认 ID 不存在或类型错误属于致命目录错误。
 
-以上规则已经由 `src/jixue/llm/config.py` 实现并可独立诊断；当前聊天链路仍使用 FakeLLM。下一小步的客户端工厂会消费这里生成的 `LLMConfig`，而不是重新读取 YAML。
+以上规则已经由 `src/jixue/llm/config.py` 实现并可独立诊断。`src/jixue/llm/factory.py` 已经直接消费这里生成的 `LLMConfig`，不会重新读取 YAML；工厂可以创建 Anthropic 协议适配器。当前聊天链路仍使用 FakeLLM，配置/工厂尚未注入 Bridge 启动入口。
 
 首版模型目录：
 
@@ -129,14 +129,18 @@ models:
 
 ### 4.2 自有接口
 
-领域接口只暴露：
+当前第一章代码中的领域接口只暴露：
 
 ```text
-LLMClient.stream(ChatRequest) -> AsyncIterator[LLMEvent]
-LLMClient.complete(ChatRequest) -> LLMResponse
+LLMClient.model_name -> str
+LLMClient.stream(prompt: str) -> AsyncIterator[LLMStreamEvent]
 ```
 
-`anthropic.AsyncAnthropic`、SDK 内容块和 SDK 异常只能出现在 `llm/anthropic_client.py` 与流解析器中。SDK 事件必须先转换成霁雪事件再离开适配器。
+这里的 `prompt: str` 是尚未引入 ConversationManager 前的最小接口。后续会把输入升级为霁雪自己的消息请求类型，但不会暴露供应商类型。
+
+`anthropic.AsyncAnthropic`、SDK 消息参数、流对象和 SDK 异常只能出现在 `llm/adapters/anthropic_client.py` 中。SDK 文本与最终 Message 必须先转换成 `LLMStreamEvent`，SDK 异常必须先转换成 `LLMClientError`，才能离开适配器。
+
+适配器使用顶层 `cache_control={"type": "ephemeral"}` 为未来稳定的多轮前缀准备 Prompt Cache。当前只有一条短用户文本，且领域 `Usage` 尚未保存缓存读写字段，因此不能把“参数已经传入”误写成“已经观察到缓存命中”。
 
 ## 5. 消息模型
 

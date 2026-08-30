@@ -73,11 +73,11 @@
 - 功能提交：`676759f feat(foundation): 打通 FakeLLM 桌面流式链路`
 - 文档提交：由本次文档提交记录。
 
-## 下一小步
+## A 步结束时记录的下一小步（当前已推进到第 2 项）
 
-1. 新建只允许在适配器目录导入的 Anthropic 客户端。
-2. 用假 SDK 流先测试转换，再使用 DeepSeek Key 做一次人工集成测试。
-3. 实现内部/API 两层消息和 `ConversationManager.to_api_format()`。
+1. 新建只允许在适配器目录导入的 Anthropic 客户端：已完成。
+2. 用假 SDK 流先测试转换：已完成；真实 DeepSeek 人工集成测试尚未执行。
+3. 实现内部/API 两层消息和 `ConversationManager.to_api_format()`：尚未开始。
 
 ## 2026-08-30：Codex 风格界面修订
 
@@ -179,4 +179,97 @@
 - Python 17 项、前端 2 项、Ruff、Mypy 和 TypeScript 全部通过。
 - 真实 Electron 构建、FakeLLM 消息和关闭窗口回归通过，配置模块没有破坏既有链路。
 - 当前聊天仍使用 FakeLLM；本步不冒充真实 DeepSeek 已接通。
-- 本次改动暂不提交，等待用户手动测试。
+- Git 提交：`fbcbfec feat(llm): 增加四字段模型配置加载`。
+
+## 2026-08-30：C 步 Anthropic 协议适配器与假 SDK 流
+
+### 目标
+
+- 只在供应商适配器内导入官方 `anthropic` SDK。
+- 把 SDK 文本增量、最终 Token 和停止原因转换成霁雪自己的事件。
+- 把可预期的 SDK 异常转换成安全、稳定、可重试判断的领域错误。
+- 用本地假 SDK 流验证请求和响应，不使用真实 Key，也不产生模型费用。
+
+### 实际改动
+
+- 在 `pyproject.toml` 增加 `anthropic>=0.120,<1` 运行依赖。
+- 新增 `llm/adapters/anthropic_client.py`，使用 `AsyncAnthropic.messages.stream()` 消费异步文本流。
+- 新增 `llm/factory.py`，让上层只按 `protocol` 创建 `LLMClient`，不直接认识供应商类。
+- 新增 `LLMClientError`，只公开 `code/message/retryable`，不让 SDK 异常对象越过边界。
+- Bridge 捕获领域错误并转成 `error` 信封；未预期异常只返回固定消息，不回显异常 repr、用户文本或 Key。
+- 请求显式传入 `api_key/base_url/max_retries`，避免 SDK 从另一个环境变量悄悄取得错误凭据。
+- 请求传入顶层 `cache_control={"type": "ephemeral"}`，为后续稳定多轮前缀准备提示缓存。
+- 新增本地假 SDK 测试，检查参数、文本事件顺序、最终用量、客户端复用、缺 Key 和类型化错误。
+- 扩展架构守门测试：扫描整个 `src/jixue`，`anthropic` 只能由 `llm/adapters` 导入。
+
+### 一条假 SDK 消息链路
+
+```text
+测试 LLMConfig
+  → create_llm_client() 选择协议
+  → AnthropicLLMClient.stream("你好")
+  → _get_client() 延迟创建并缓存客户端
+  → messages.stream(...) 接收请求参数
+  → text_stream 产生文本片段
+  → LLMStreamEvent(TEXT)
+  → await get_final_message()
+  → LLMStreamEvent(USAGE)
+  → LLMStreamEvent(COMPLETE)
+```
+
+这条链路验证的是适配器本身。当前 `BridgeServer` 启动时仍注入 FakeLLM，所以在 Electron 中点击发送不会调用 DeepSeek。
+
+### 遇到的问题
+
+#### `get_final_message()` 看起来像普通方法，实际需要等待
+
+- 现象：第一次写成 `final_message = stream.get_final_message()` 后，Mypy 提示协程没有 `usage` 和 `stop_reason`。
+- 原因：异步客户端的 `get_final_message()` 返回 awaitable；仅从方法名称看不出这一点。
+- 修复：改为 `final_message = await stream.get_final_message()`。
+- 复盘：使用异步 SDK 时不能只看示例外观，要同时检查类型声明；Mypy 能在真实请求前发现“拿到协程却当结果使用”的错误。
+
+#### 测试替身的返回类型写得太宽
+
+- 现象：Bridge 错误测试把假客户端流声明成 `AsyncIterator[object]`，Mypy 无法确认它符合 `LLMClient`。
+- 原因：`object` 只表示“任意对象”，没有保证事件具备 `type/text/usage` 字段。
+- 修复：把返回类型收窄为 `AsyncIterator[LLMStreamEvent]`。
+- 复盘：测试代码的类型也应该描述真实合同，否则测试替身可能悄悄偏离正式接口。
+
+### 设计取舍
+
+- 选择延迟创建 SDK 客户端，而不是构造适配器时立刻要求 Key。
+- 原因：没有 Key 的初学者仍能启动应用、查看模型目录并使用 FakeLLM；真正发送时才得到 `credentials_missing`。
+- 选择复用同一个 SDK 客户端。
+- 原因：后续多次请求可以复用 SDK 内部连接池，不必每条消息重新建立客户端。
+- 选择在适配器内翻译类型化异常。
+- 原因：Bridge 和 UI 只需要稳定领域语义，也避免把供应商响应细节或敏感信息直接公开。
+- 选择现在就传提示缓存参数，但不宣称已经命中。
+- 原因：缓存需要稳定且足够长的前缀；当前单条短消息和两字段 Usage 还不能提供真实命中证据。
+- 选择不做真实网络请求。
+- 原因：本小步的目标是免费验证封装边界；真实 Key、网络和费用由下一次明确手测控制。
+
+### `Codex-api` 技能怎样影响实现
+
+- 使用官方 `anthropic` Python SDK，而不是手写 HTTP 或套 OpenAI 兼容层。
+- 使用官方流式 helper 和类型化异常，不解析私有 SDK 内部字段。
+- 在请求入口加入提示缓存参数，并在教学中区分“已传参数”和“真实命中”。
+- 把 SDK 完全限制在适配器文件，上层只接收霁雪领域事件和领域错误。
+
+### 验证
+
+- 适配器与 Bridge 定向测试 13 项通过。
+- 完整 Python 27 项、前端 2 项通过。
+- Ruff、15 个 Python 源文件的 Mypy 检查和 TypeScript 类型检查全部通过。
+- Electron 生产构建与真实进程回归通过；窗口自动发送 FakeLLM 消息并正常退出，没有主进程 JavaScript 错误。
+- 没有读取真实 `DEEPSEEK_API_KEY`，没有网络调用，也没有费用。
+
+### Git
+
+- B 步已经提交：`fbcbfec feat(llm): 增加四字段模型配置加载`。
+- C 步按约定保持未提交，等待用户阅读、启动和手动测试。
+
+## 当前下一小步
+
+1. 给 Bridge 启动入口增加明确的模型模式选择，同时保留 FakeLLM 默认值。
+2. 用户确认后在本机临时设置 Key，完成一次真实 DeepSeek 流式手测。
+3. 实现内部/API 两层消息和 `ConversationManager.to_api_format()`。
