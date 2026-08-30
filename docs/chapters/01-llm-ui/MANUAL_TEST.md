@@ -163,6 +163,21 @@
 - 非法 Bridge 命令：收到 `error` 事件，服务器继续运行。
 - 窗口关闭：Electron 自动回收 Python Bridge。
 
+## 用例 12：两层消息与历史清洗
+
+- 前置条件：位于项目根目录，`mycoder` 已安装开发依赖。
+- 操作步骤：
+  1. 执行 `conda run --no-capture-output -n mycoder pytest tests/domain/test_conversation.py -vv`。
+  2. 打开 `src/jixue/domain/conversation.py`，按 `to_api_format()` 注释对照测试输入。
+- 预期结果：
+  1. 7 项测试通过。
+  2. streaming、failed、cancelled 和空白消息不进入 API 历史。
+  3. 相邻 user 消息合并，内部原始列表保持不变。
+  4. 重复 ID、空结果和 assistant 开头得到中文 `ConversationError`。
+- 实际结果：2026-08-31 定向测试 7 项通过。
+- 结论：通过。
+- 注意：本步尚未接入 Bridge；Electron 连续发送仍不是多轮对话。
+
 缺失 Key 的“目录仍可加载”和“适配器发送前返回 `credentials_missing`”已经用本地测试验证。认证、限流、连接和 5xx 的**翻译逻辑**使用官方异常类型构造测试完成；真实断网、真实限流、半截 assistant 消息和账户权限仍要等网络手测，本记录不写成已通过。
 
 ## 本章常见坑
@@ -183,6 +198,8 @@
 | configured 启动后立刻退出 | 模式、模型 ID 或目录结构无效 | 查看带 `[jixue-python]` 前缀的 stderr | 按中文错误修正变量或 YAML |
 | 改了 .env.example 但没有生效 | 程序只加载 `.env`，示例文件只是模板 | 确认当前目录存在名为 `.env` 的文件 | 复制 `.env.example` 为 `.env`，真实 Key 只写入复制文件 |
 | `.env` 与系统环境冲突 | 不清楚谁优先 | 阅读 `load_project_environment()` 的三步注释 | 当前实现固定使用项目 `.env` 的同名值 |
+| streaming 半截回复进入历史 | 没按状态过滤 | 运行 conversation 定向测试 | 只允许 complete 进入 API 历史 |
+| 转换后 UI 历史也少了 | 原地删除或修改内部列表 | 比较转换前后的 `manager.messages` | 返回新 `APIMessage`，不改内部消息 |
 
 ## 回归结论
 
@@ -190,4 +207,5 @@
 - 可以进入第一章下一小步：是。
 - Electron 构建与退出回归：通过，没有出现 “A JavaScript error occurred in the main process”。
 - D 步模型模式接线：项目 `.env` 自动加载、优先级、默认 fake、configured 缺 Key 和测试隔离均通过；真实 Key 请求待用户验收。
-- 未解决问题：真实 DeepSeek 网络验收、ConversationManager、UI 三模型选择和十轮对话回归。
+- E 步消息模型与历史清洗：7 项定向测试通过，尚未接入真实请求。
+- 未解决问题：ConversationManager 接线、真实 DeepSeek 多轮验收、UI 三模型选择和十轮对话回归。

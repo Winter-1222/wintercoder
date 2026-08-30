@@ -814,12 +814,12 @@ assistant.content += "霁雪"
 - Token 是字符数估算，不是供应商准确用量。
 - `session_id` 目前固定为 `session_dev`。
 - `model_id` 目前固定为 `fake`。
-- 每次只把当前用户文本发给 FakeLLM，没有附带完整历史。
+- `ConversationManager` 已能生成干净历史，但尚未接入 Bridge/LLM，所以每次仍只发送当前用户文本。
 - 左侧“新任务”目前只是界面占位，没有创建会话功能。
 - 还没有用用户自己的 Key 做真实网络手测，也没有观察到真实 Prompt Cache 命中。
 - 模型目前在进程启动前通过环境变量选择，UI 里还没有 Flash/Pro/Vision Exp 下拉框。
 
-因此现在连续发送两条消息，只证明“可以连续请求”，不代表第二次请求知道第一次聊过什么。真正多轮对话要等 `ConversationManager`。
+因此现在连续发送两条消息，只证明“可以连续请求”，不代表第二次请求知道第一次聊过什么。消息管理器已经完成；下一小步要把它接入 Bridge 和 LLM 请求。
 
 ## 12. 模型配置是怎么跑起来的
 
@@ -1596,7 +1596,7 @@ conda run --no-capture-output -n mycoder python -m pytest tests/llm/test_anthrop
 6. **为什么 `sequence` 不一直是 0？** 它表示同一请求中事件先后顺序，每发一个事件递增。
 7. **为什么流式时不用 ReactMarkdown？** Markdown 可能只到半截，频繁解析会闪烁或产生错误结构。
 8. **什么时候开始 Markdown 渲染？** 收到 `turn_complete`，reducer 把消息状态设为 complete 后。
-9. **当前第二条请求知道第一条消息吗？** 不知道；ConversationManager 尚未实现。
+9. **当前第二条请求知道第一条消息吗？** 还不知道；ConversationManager 已实现，但尚未接入 Bridge/LLM 请求。
 10. **换成 DeepSeek 后 React 是否应该重写？** 不应该；供应商差异应被 LLM 适配器隐藏。
 11. **`LLMConfig` 为什么不包含 label 和 context_window？** 这些是应用模型目录的展示与调度元数据，不是创建供应商客户端必需的四个字段。
 12. **没有 `DEEPSEEK_API_KEY` 时，目录为什么仍能加载？** 缺凭据是可补救的运行状态，用户仍应能启动应用并使用 FakeLLM。
@@ -1619,16 +1619,128 @@ conda run --no-capture-output -n mycoder python -m pytest tests/llm/test_anthrop
 29. **`bridge.ready.payload.model` 到达 TypeScript 后为什么还要检查类型？** JSON 是运行时外部数据，TypeScript 编译期类型不能保证 Python 实际传来的值合法。
 30. **非法 `JIXUE_LLM_MODE` 为什么写 stderr 而不是 stdout？** stdout 专门承载 NDJSON，混入普通错误文本会破坏 Electron 的协议解析。
 31. **项目 `.env` 和系统环境里有同名变量时用哪个？** 使用项目 `.env`；`load_project_environment()` 先复制系统环境，再用项目文件覆盖同名值。
+32. **`Message` 和 `APIMessage` 最大的区别是什么？** `Message` 保存 ID、状态、时间、Token 等内部元数据；`APIMessage` 只有 role 和 content。
+33. **为什么 streaming 消息不能进入 API 历史？** 它可能只有半截正文，把它当完整回复会让模型误解之前已经说完。
+34. **相邻两条 user 消息怎样处理？** `to_api_format()` 用两个换行合成一条 user 消息，保留段落边界。
+35. **`to_api_format()` 会修改原消息列表吗？** 不会；它返回一份新列表，内部历史仍保留原始消息与状态。
+36. **为什么拒绝 assistant 开头的历史？** 正常对话需要先有用户请求；拒绝异常历史比让供应商返回模糊坏请求更容易排查。
 
-如果第 1—8 题能用自己的话回答，你已经理解当前消息链路；第 9、10 题帮助区分“当前能力”和“未来设计”；第 11—15 题用于复盘模型目录；第 16—23 题用于复盘客户端工厂、流式适配器、缓存和错误边界；第 24—31 题用于复盘 `.env`、Bridge 启动选择和安全边界。
+如果第 1—8 题能用自己的话回答，你已经理解当前消息链路；第 9、10 题帮助区分“当前能力”和“未来设计”；第 11—15 题用于复盘模型目录；第 16—23 题用于复盘客户端工厂、流式适配器、缓存和错误边界；第 24—31 题用于复盘 `.env`、Bridge 启动选择和安全边界；第 32—36 题用于复盘两层消息与历史清洗。
 
-## 18. 本章下一小步
+## 18. E 步：两层消息模型与 ConversationManager
+
+### 18.1 推荐阅读顺序
+
+1. 先读 `src/jixue/domain/messages.py`，认识完整的内部 `Message`。
+2. 再读 `src/jixue/domain/conversation.py` 的 `APIMessage`，比较它少了哪些字段。
+3. 接着读 `ConversationManager.add()`、`add_user()` 和 `add_assistant()`，理解消息怎样进入列表。
+4. 最后逐行读 `to_api_format()` 和 `_validate_api_messages()`。
+5. 打开 `tests/domain/test_conversation.py`，用输入与断言反向确认每条规则。
+
+### 18.2 一条内部消息怎样变成 API 消息
+
+先看内部历史，它保留 UI 和持久化需要的信息：
+
+```text
+Message
+├─ role = user
+├─ content = "  帮我解释 reducer  "
+├─ status = complete
+├─ id = msg_xxx
+├─ created_at = 2026-...
+└─ usage = Usage(...)
+```
+
+转换链路是：
+
+```text
+ConversationManager._messages
+  ↓ 只保留 status=complete
+  ↓ 丢弃纯空白正文
+  ↓ content.strip() 清理两端空白
+  ↓ 相邻同角色用两个换行合并
+  ↓ 校验第一条是 user
+  ↓ 校验 user / assistant 交替
+list[APIMessage]
+  └─ APIMessage(role="user", content="帮我解释 reducer")
+```
+
+ID、时间、状态和 Token 没有丢失，它们仍在内部 `Message` 中；只是不会重复发送给模型，
+从而减少 Token，也避免供应商格式反过来污染 UI 与持久化。
+
+### 18.3 为什么要过滤状态
+
+| 内部状态 | 是否发送 | 原因 |
+| --- | --- | --- |
+| `complete` | 是 | 内容已经收口，可以成为可靠历史 |
+| `streaming` | 否 | 可能只有半句话 |
+| `failed` | 否 | 失败正文可能是残缺的 UI 提示 |
+| `cancelled` | 否 | 用户已经中止，不应冒充完整回复 |
+
+过滤不等于删除。`to_api_format()` 创建新列表，`manager.messages` 仍保留原始对象，界面
+和未来会话恢复仍能看到发生过什么。
+
+### 18.4 为什么要合并相邻同角色
+
+用户可能连续补充两句，中间没有模型回复：
+
+```text
+user: 帮我看 state.ts
+user: 尤其解释 chatReducer
+```
+
+API 历史会变成：
+
+```text
+user: 帮我看 state.ts
+
+尤其解释 chatReducer
+```
+
+两个换行表示新段落，比直接黏成一句更清楚。合并后角色天然交替，最终校验仍会守住
+不变量，防止未来内容块扩展时产生异常格式。
+
+### 18.5 每个公开方法负责什么
+
+| 方法 | 初学者理解 | 当前职责 |
+| --- | --- | --- |
+| `add(message)` | 把已有消息放进列表 | 保持顺序并拒绝重复 ID |
+| `add_user(content)` | 新建用户消息 | 自动使用 user + complete |
+| `add_assistant(content, status)` | 新建助手消息 | 可显式记录 streaming 等状态 |
+| `messages` | 看当前历史 | 返回元组快照，不能直接 append |
+| `clear()` | 开始空会话 | 只清内存，不碰磁盘 |
+| `to_api_format()` | 准备模型输入 | 过滤、清理、合并、校验并返回新对象 |
+
+### 18.6 当前边界
+
+本步只证明“历史能被正确管理和清洗”。`BridgeApplication` 还没有持有
+`ConversationManager`，`LLMClient.stream()` 仍接收一个 `prompt: str`。所以现在打开
+Electron 连续问两次，第二问仍不会携带第一轮；下一小步才修改这条实际请求链路。
+
+### 18.7 手动运行本步测试
+
+```powershell
+conda run --no-capture-output -n mycoder pytest tests/domain/test_conversation.py -vv
+```
+
+应看到 7 项通过。测试只创建内存对象和 pytest 临时数据，不读取 `.env`、不启动
+Electron，也不访问 DeepSeek。
+
+### 18.8 常见坑
+
+- 把 `Literal` 当成运行时校验：它主要帮助 Mypy，外部 JSON 仍需显式检查。
+- 直接返回内部 list：调用方可以 append，绕过重复 ID 规则；所以这里返回 tuple。
+- 原地 strip 或删除历史：会让 UI 和持久化丢失原始事实；转换必须创建新对象。
+- 把 streaming 半截内容发给模型：下一轮会把不完整回答当作既成事实。
+- 错误消息包含用户正文：异常日志可能泄露对话，因此校验错误只描述规则。
+
+## 19. 本章下一小步
 
 接下来按这个顺序继续，不进入工具系统：
 
-1. 由用户在本机临时设置 Key，使用 DeepSeek Anthropic 端点完成一次真实流式手测。
-2. 实现内部消息与 API 消息两层模型。
-3. 实现 `ConversationManager.to_api_format()`，让第二次请求携带完整历史。
+1. 把 `ConversationManager` 注入 Bridge，把 `LLMClient.stream()` 输入升级为完整 API 历史。
+2. 完成连续两轮自动化测试，证明第二次请求实际携带第一轮。
+3. 由用户用 DeepSeek Anthropic 端点完成一次真实多轮流式手测。
 4. 加入 Flash、Pro、Vision Exp UI 模型选择，不再依赖重启进程切换。
 
 每完成一步，本章都会增加该能力自己的推荐阅读顺序、端到端链路、输入输出示例、常见错误和手动验证方法。

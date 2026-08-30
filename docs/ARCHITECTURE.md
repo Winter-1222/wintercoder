@@ -136,7 +136,7 @@ LLMClient.model_name -> str
 LLMClient.stream(prompt: str) -> AsyncIterator[LLMStreamEvent]
 ```
 
-这里的 `prompt: str` 是尚未引入 ConversationManager 前的最小接口。后续会把输入升级为霁雪自己的消息请求类型，但不会暴露供应商类型。
+`ConversationManager` 和供应商无关的 `APIMessage` 已经建立，但当前 `LLMClient` 仍保留 `prompt: str` 最小接口；下一小步才把两者接线。分步实现能先独立验证历史清洗规则，再改变真实请求边界。
 
 `anthropic.AsyncAnthropic`、SDK 消息参数、流对象和 SDK 异常只能出现在 `llm/adapters/anthropic_client.py` 中。SDK 文本与最终 Message 必须先转换成 `LLMStreamEvent`，SDK 异常必须先转换成 `LLMClientError`，才能离开适配器。
 
@@ -176,14 +176,17 @@ Electron Main 把 Python 工作目录固定为项目根目录
 - API 层：`role + content`，只含供应商能够接受的干净内容块。
 - 内部层：增加 `id`、`status`、`created_at`、`usage`、`metadata`。
 
-`ConversationManager.to_api_format()` 按固定顺序处理：
+当前 `ConversationManager.to_api_format()` 已按固定顺序处理：
 
 1. 过滤草稿、取消、仅 UI 可见和无有效内容的消息。
 2. 把内部内容块转换为协议无关的 API 内容块。
 3. 合并相邻同角色消息。
 4. 校验 user/assistant 交替关系。
-5. 第二章起校验 `tool_use` 与 `tool_result` 的引用关系。
-6. 返回新对象，绝不原地修改内部历史。
+5. 校验第一条必须是 user，并守住 user/assistant 交替不变量。
+6. 返回新的 `APIMessage` 列表，绝不原地修改内部历史。
+
+第二章加入内容块后，再扩展 `tool_use` 与 `tool_result` 的引用校验。当前管理器尚未注入
+`BridgeApplication`，因此 Electron 第二次发送仍只把当前文本传给 LLM；这是下一小步的接线范围。
 
 ## 6. 桥接事件协议
 

@@ -117,6 +117,7 @@ src/jixue/
 │  └─ server.py
 ├─ domain/
 │  ├─ __init__.py
+│  ├─ conversation.py
 │  ├─ events.py
 │  └─ messages.py
 ├─ llm/
@@ -142,6 +143,7 @@ src/jixue/
 | 文件 | 类型 | 职责 |
 | --- | --- | --- |
 | `domain/__init__.py` | 提交 | 导出领域层公共类型。 |
+| `domain/conversation.py` | 提交 | 定义仅含 role/content 的 `APIMessage`，维护内部消息列表，并按过滤、清理、合并、交替校验生成 API 历史。 |
 | `domain/events.py` | 提交 | 定义 NDJSON `Envelope`、协议版本、序列化和协议错误。 |
 | `domain/messages.py` | 提交 | 定义消息角色、状态、用量和内部消息元数据。 |
 
@@ -194,6 +196,7 @@ src/jixue/
 | 文件 | 职责 |
 | --- | --- |
 | `tests/domain/test_events.py` | 验证信封序列化、协议版本和错误输入。 |
+| `tests/domain/test_conversation.py` | 验证消息过滤、相邻角色合并、内部历史不变、重复 ID、空历史和错误开头；不访问网络。 |
 | `tests/bridge/test_application.py` | 验证握手、FakeLLM 流式顺序、Token、完成事件和领域错误信封。 |
 | `tests/bridge/test_bootstrap.py` | 验证默认离线、项目 `.env` 覆盖系统环境、configured 目录选择、缺 Key 可恢复错误和非法启动配置；不访问网络。 |
 | `tests/llm/test_config.py` | 验证默认三模型、缺 Key 降级、环境变量脱敏、本地覆盖和坏目录拒绝。 |

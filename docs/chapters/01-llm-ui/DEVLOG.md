@@ -458,8 +458,43 @@ Electron 把 Python cwd 固定为项目根目录
 - 本修订与尚未提交的 D 步放在一起。
 - 按用户约定，本轮完成后不自动提交，先交给用户启动和手动测试。
 
+## 2026-08-31：E 步两层消息与历史清洗
+
+### 目标与范围
+
+- 复用已有内部 `Message`，新增只有 role/content 的 `APIMessage`。
+- 实现 `ConversationManager` 的加入、快照、清空和 `to_api_format()`。
+- 本步不修改 Bridge、LLMClient 或 UI，避免同时改变存储规则和真实请求边界。
+
+### 实际改动
+
+- 新增 `domain/conversation.py`，代码注释按初学者阅读顺序解释每一步。
+- `to_api_format()` 固定执行：过滤非 complete → 丢弃空白 → trim → 合并同角色 → 校验。
+- 相邻同角色用两个换行合并；历史必须从 user 开头。
+- `messages` 返回 tuple 快照；`add()` 拒绝重复 ID。
+- `domain/__init__.py` 导出 `APIMessage`、`ConversationError` 和 `ConversationManager`。
+- 新增本地测试，覆盖过滤、合并、不修改原历史、便捷方法、clear、重复 ID、空结果和 assistant 开头。
+
+### 遇到的坑
+
+- Mypy 在同一个测试里把“清空前的二元组”错误延续到清空后的比较。
+- 将 `assert manager.messages == ()` 改成语义相同的 `assert not manager.messages` 后通过。
+- 复盘：测试断言不仅要让 Python 正确，也要让静态类型检查器容易理解。
+
+### 验证
+
+- 对话管理器定向测试：7 项通过。
+- Ruff：通过。
+- 完整 Python：41 项通过。
+- Mypy：17 个源码文件严格检查通过。
+
+### Git
+
+- D 步已提交：`4ec2c1b feat(llm): 接通项目配置与动态模型`。
+- E 步按约定保持未提交，等待用户手测。
+
 ## 当前下一小步
 
-1. 用户直接使用项目 `.env` 启动 Electron，完成一次真实 DeepSeek Flash 流式手测。
-2. 实现内部/API 两层消息与 `ConversationManager.to_api_format()`。
-3. 在 ConversationManager 稳定后增加 UI 三模型选择。
+1. 把 ConversationManager 接入 Bridge 与 LLMClient，真正发送完整历史。
+2. 自动验证第二轮请求含第一轮 user/assistant。
+3. 再进行真实 DeepSeek 多轮手测和 UI 模型选择。

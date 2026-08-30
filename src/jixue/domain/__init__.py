@@ -3,10 +3,14 @@
 __all__ 明确告诉阅读者和工具：从 jixue.domain 导入时，哪些名称属于稳定公共接口。
 """
 
+from jixue.domain.conversation import APIMessage, ConversationError, ConversationManager
 from jixue.domain.events import Envelope, ProtocolError
 from jixue.domain.messages import Message, MessageStatus, Role, Usage
 
 __all__ = [
+    "APIMessage",
+    "ConversationError",
+    "ConversationManager",
     "Envelope",
     "Message",
     "MessageStatus",
