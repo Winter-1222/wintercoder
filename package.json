@@ -1,0 +1,17 @@
+{
+  "name": "jixue-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/desktop"
+  ],
+  "scripts": {
+    "dev": "npm --workspace @jixue/desktop run dev",
+    "build": "npm --workspace @jixue/desktop run build",
+    "test:electron": "npm run build && node tests/ui/smoke_electron.mjs",
+    "test:frontend": "npm --workspace @jixue/desktop run test",
+    "typecheck": "npm --workspace @jixue/desktop run typecheck",
+    "test:all": "powershell -ExecutionPolicy Bypass -File scripts/test-all.ps1"
+  },
+  "packageManager": "npm@11.12.1"
+}

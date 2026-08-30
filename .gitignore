@@ -13,6 +13,7 @@ node_modules/
 out/
 .vite/
 coverage/
+artifacts/
 
 # 本地配置与密钥
 .env

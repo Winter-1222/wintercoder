@@ -1,0 +1,34 @@
+schema_version: 1
+default_model: flash
+models:
+  flash:
+    label: Flash
+    experimental: false
+    capabilities: [text, tools]
+    context_window: 1000000
+    llm:
+      protocol: anthropic
+      model: deepseek-v4-flash
+      base_url: https://api.deepseek.com/anthropic
+      api_key: ${DEEPSEEK_API_KEY}
+  pro:
+    label: Pro
+    experimental: false
+    capabilities: [text, tools]
+    context_window: 1000000
+    llm:
+      protocol: anthropic
+      model: deepseek-v4-pro
+      base_url: https://api.deepseek.com/anthropic
+      api_key: ${DEEPSEEK_API_KEY}
+  vision_exp:
+    label: Vision Exp
+    experimental: true
+    capabilities: [text, vision, tools]
+    context_window: 1000000
+    llm:
+      protocol: anthropic
+      model: deepseek-v4-flash-vision-exp
+      base_url: https://api.deepseek.com/anthropic
+      api_key: ${DEEPSEEK_API_KEY}
+
