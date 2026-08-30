@@ -40,7 +40,17 @@ docs/chapters/01-llm-ui/
 6. 在 DEVLOG 写遇到的错误与取舍。
 7. 检查 diff 后提交 Git。
 
-## 4. 测试分层
+DEVLOG 中的提交号采用下一次文档提交回填：功能提交先记录待回填标记，随后在同章的 `docs` 提交中填入功能提交号；不修改已经创建的提交来制造自指记录。
+
+## 4. 环境前置
+
+- 已安装 Conda，存在 `mycoder` 环境；当前基线为 Python 3.12.13。
+- 已安装 Node.js 与 npm；当前基线为 Node.js 24.15.0、npm 11.12.1。
+- Day 1 会在 `pyproject.toml` 与 Electron lockfile 中锁定实际依赖版本，并把安装、启动、测试命令写入 README；总体路线不提前虚构尚未生成的命令。
+- 真实集成测试需要 DeepSeek API Key、可访问官方端点的网络；第六章高德手测另需高德 MCP Key。
+- 没有真实 Key 时仍可使用 FakeLLM、FakeTransport 完成默认自动化测试。
+
+## 5. 测试分层
 
 - 单元测试：消息转换、JSON 碎片、权限规则、批次分区等纯逻辑。
 - 组件测试：使用 FakeLLM、FakeTool、FakeTransport，不访问网络。
@@ -49,14 +59,14 @@ docs/chapters/01-llm-ui/
 
 真实 API 不放进默认自动化测试，以免测试不稳定和产生费用。
 
-## 5. 密钥与日志
+## 6. 密钥与日志
 
 - 示例配置只写 `${DEEPSEEK_API_KEY}`、`${AMAP_MCP_KEY}`。
 - API Key 不能出现在异常字符串、请求 dump、截图或开发日志中。
 - 默认日志记录请求 ID、模型、耗时、Token、事件类型，不记录完整对话正文。
 - 需要调试正文时使用临时显式开关，结束后删除产生的日志。
 
-## 6. Git 约定
+## 7. Git 约定
 
 提交格式：`类型(范围): 中文说明`。
 

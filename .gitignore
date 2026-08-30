@@ -19,6 +19,7 @@ coverage/
 .env.*
 !.env.example
 config.local.*
+config/*.local.*
 
 # 霁雪运行数据
 .jixue/

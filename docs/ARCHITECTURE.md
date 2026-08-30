@@ -78,7 +78,47 @@ base_url: https://api.deepseek.com/anthropic
 api_key: ${DEEPSEEK_API_KEY}
 ```
 
-模型选择器是应用层的“模型目录”，目录中的每个条目仍然生成一个四字段配置。上下文窗口、展示名称、是否实验模型属于模型目录元数据，不进入 `LLMConfig`。
+模型选择器是应用层的“模型目录”，目录中的每个条目仍然生成一个四字段配置。上下文窗口、展示名称、是否实验模型属于模型目录元数据，不进入 `LLMConfig`。首版 `config/models.yaml` 的完整形状如下：
+
+```yaml
+schema_version: 1
+default_model: flash
+models:
+  flash:
+    label: Flash
+    experimental: false
+    capabilities: [text, tools]
+    context_window: 1000000
+    llm:
+      protocol: anthropic
+      model: deepseek-v4-flash
+      base_url: https://api.deepseek.com/anthropic
+      api_key: ${DEEPSEEK_API_KEY}
+  pro:
+    label: Pro
+    experimental: false
+    capabilities: [text, tools]
+    context_window: 1000000
+    llm:
+      protocol: anthropic
+      model: deepseek-v4-pro
+      base_url: https://api.deepseek.com/anthropic
+      api_key: ${DEEPSEEK_API_KEY}
+  vision_exp:
+    label: Vision Exp
+    experimental: true
+    capabilities: [text, vision, tools]
+    context_window: 1000000
+    llm:
+      protocol: anthropic
+      model: deepseek-v4-flash-vision-exp
+      base_url: https://api.deepseek.com/anthropic
+      api_key: ${DEEPSEEK_API_KEY}
+```
+
+`flash`、`pro`、`vision_exp` 是稳定目录 ID，UI 状态和 `default_model` 只引用它，不把可变 label 或 API model 当主键。`config/models.local.yaml` 使用相同顶层结构：同 ID 的模型条目整体替换，不做字段级深合并，因此本地条目必须完整；`default_model` 若出现则覆盖默认值，未出现则沿用默认目录。合并后统一做 Schema 校验。
+
+环境变量展开分成两种结果：字段结构正确且变量存在时为 `ready`；字段结构正确但 Key 对应变量缺失时为非致命 `credentials_missing`，允许 UI 启动但禁止发送该模型请求；字段缺失、协议未知、默认 ID 不存在或类型错误属于致命目录错误。
 
 首版模型目录：
 
@@ -132,7 +172,34 @@ LLMClient.complete(ChatRequest) -> LLMResponse
 }
 ```
 
-`request_id + sequence` 用于隔离并排序并发请求；未知事件由 UI 忽略并记警告，避免协议升级导致整个客户端崩溃。首批命令为 `chat.send`、`chat.cancel`、`mode.set`、`session.load`，首批事件跟随各章逐步增加。
+`request_id + sequence` 用于隔离并排序并发请求；未知事件由 UI 忽略并记警告，避免协议升级导致整个客户端崩溃。命令与事件按所属章节逐步增加。
+
+| 方向 | 类型 | 所属章节 | 必要 payload |
+| --- | --- | --- | --- |
+| Main → Python | `bridge.hello` | 第 0 步 | 协议版本、客户端版本 |
+| Python → Main | `bridge.ready` | 第 0 步 | 协议版本、后端版本、能力列表 |
+| Main → Python | `chat.send` | 第 1 章 | 会话 ID、文本、模型 ID |
+| Main → Python | `chat.cancel` | 第 3 章 | 目标 request_id |
+| Main → Python | `mode.set` | 第 3 章 | `plan` 或 `do` |
+| Main → Python | `permission.respond` | 第 5 章 | 权限请求 ID、允许或拒绝 |
+| Main → Python | `session.load` | 第 8 章 | 会话 ID |
+| Python → Main | `error` | 第 0 步 | 错误码、可公开消息、是否可重试 |
+
+命令也使用相同 envelope，但 `sequence` 由发送端对同一 request_id 单调递增。完成或取消必须有终态事件确认；Electron Main 在收到 `bridge.ready` 前不转发业务命令。stdin 只由一个写队列串行写入；单行首版限制 1 MiB，超限返回协议错误。EOF、Python 非零退出或连续畸形行会使 Bridge 进入 unavailable，Main 终止当前请求并允许用户手动重启后端；首版不自动无限重启。Renderer 消费速度不足时，Main 对状态类事件只保留最新值，但不丢文本、工具、权限和终态事件。
+
+业务事件按章节扩展，payload 的最小契约固定如下：
+
+| 事件 | 首次实现 | 必要 payload |
+| --- | --- | --- |
+| `stream_text` | 第 1 章 | `text`、`message_id` |
+| `usage` | 第 1 章 | 当轮与累计 input/output token |
+| `turn_complete` | 第 1 章 | `turn_index`、`stop_reason`、总耗时 |
+| `error` | 第 0 步 | `code`、`message`、`retryable`、`scope` |
+| `tool_use` | 第 2 章 | `id`、`name`、`input` |
+| `tool_result` | 第 2 章 | `tool_use_id`、`is_error`、耗时、UI metadata |
+| `loop_complete` | 第 3 章 | 总 turn 数、结束原因 |
+
+第 1 章把 `turn_complete` 作为单次 LLM 调用终态；第 3 章引入循环后，每次调用仍发 `turn_complete`，整个任务只额外发一次 `loop_complete`。第 2、3 章是在同一个可辨识联合类型上增加事件，不重新定义已有 payload。
 
 ## 7. UI 原则
 
