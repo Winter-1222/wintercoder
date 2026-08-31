@@ -1,248 +1,63 @@
-# 霁雪目录与文件职责
+# 目录与文件职责
 
-本文只记录当前工作区已经存在的内容。新增、删除或移动文件时必须同步更新本文，避免目录结构与代码脱节。未来章节的规划放在 `ROADMAP.md`，不在这里提前列空目录。
+这份文件只回答一个问题：当前每个目录和源码文件是干什么的。新增、删除文件时同步更新这里。
 
-标记说明：
-
-- **提交**：属于项目正式源码或文档，应进入 Git。
-- **本地**：用于当前开发机验证，被 `.gitignore` 排除，不进入 Git。
-- **生成**：由安装、构建或运行产生，可安全重新生成。
-
-## 1. 根目录
+## 总览
 
 ```text
 myAgent/
-├─ apps/                 Electron 桌面客户端
-├─ config/               可提交的应用配置模板
-├─ docs/                 架构、路线、教学和复盘文档
-├─ scripts/              开发命令入口
-├─ src/                  Python 主源码
-├─ tests/                本地自动化测试，不提交
-├─ .env                  本机真实运行配置，不提交
-├─ .env.example          可复制的环境变量模板
-├─ .gitignore            Git 忽略规则
-├─ AGENTS.md             霁雪项目协作约定
-├─ package.json          Node workspace 与根级命令
-├─ package-lock.json     Node 依赖锁文件
-├─ pyproject.toml        Python 工程与工具配置
-└─ README.md             项目入口和快速开始
+├─ apps/desktop/       Electron + React 桌面端
+├─ config/             模型选择配置
+├─ docs/               路线、目录说明和每章唯一的 README
+├─ scripts/            本地检查脚本
+├─ src/jixue/          Python 后端核心
+├─ tests/              本地测试，Git 忽略
+├─ .env                本地密钥，Git 忽略
+├─ .env.example        不含密钥的配置示例
+├─ pyproject.toml      Python 项目和检查工具配置
+└─ package.json        前端命令总入口
 ```
 
-| 文件 | 类型 | 职责 |
-| --- | --- | --- |
-| `.env` | 本地 | Python Bridge 从当前项目根目录主动读取的真实运行配置；同名值优先于系统环境变量，可能包含 Key，绝不提交。 |
-| `.env.example` | 提交 | 声明 configured 模式、模型 ID 和密钥变量的空值模板；复制为 `.env` 后才会被加载，本文件永远不存真实 Key。 |
-| `.gitignore` | 提交 | 排除依赖、构建产物、密钥、运行数据和本地测试。 |
-| `AGENTS.md` | 提交 | 约束注释语言、Conda 环境、SDK 边界、Git 和文档流程。 |
-| `package.json` | 提交 | 声明 npm workspace，并提供开发、构建、类型检查和本地测试命令。 |
-| `package-lock.json` | 提交 | 锁定 Electron/React 等 Node 依赖的完整版本树。 |
-| `pyproject.toml` | 提交 | 声明 Python 包、`anthropic`、`python-dotenv`、PyYAML、开发依赖以及 pytest、Ruff、Mypy 配置。 |
-| `README.md` | 提交 | 告诉开发者如何安装、启动、测试以及从哪里阅读文档。 |
-
-## 2. `apps/desktop`：Electron 客户端
-
-```text
-apps/desktop/
-├─ src/
-│  ├─ main/
-│  │  ├─ index.ts
-│  │  └─ bridge-process.ts
-│  ├─ preload/
-│  │  └─ index.ts
-│  ├─ renderer/
-│  │  ├─ src/
-│  │  │  ├─ App.tsx
-│  │  │  ├─ main.tsx
-│  │  │  ├─ state.ts
-│  │  │  ├─ state.test.ts       本地，不提交
-│  │  │  ├─ styles.css
-│  │  │  └─ env.d.ts
-│  │  ├─ favicon.svg
-│  │  └─ index.html
-│  └─ shared/
-│     └─ protocol.ts
-├─ electron.vite.config.ts
-├─ package.json
-└─ tsconfig.json
-```
-
-### Main 进程
-
-| 文件 | 类型 | 职责 |
-| --- | --- | --- |
-| `src/main/index.ts` | 提交 | 创建安全 BrowserWindow、注册 IPC、启动 Bridge，并在退出时安全回收资源。 |
-| `src/main/bridge-process.ts` | 提交 | 在 `mycoder` 中启动 Python，读写 NDJSON，维护 Bridge 状态并隔离 stderr。 |
-
-Main 进程只处理窗口、IPC 和进程生命周期，不解释 Agent 业务，也不把 Node 能力直接交给 Renderer。
-
-### Preload 与共享协议
-
-| 文件 | 类型 | 职责 |
-| --- | --- | --- |
-| `src/preload/index.ts` | 提交 | 通过 `contextBridge` 暴露发送消息、读取状态和订阅事件四个窄接口。 |
-| `src/shared/protocol.ts` | 提交 | 定义 Main、Preload、Renderer 共用的 Bridge 信封、状态和桌面 API 类型。 |
-
-### Renderer
-
-| 文件 | 类型 | 职责 |
-| --- | --- | --- |
-| `src/renderer/index.html` | 提交 | Renderer HTML 入口，设置 CSP、主题色和挂载节点。 |
-| `src/renderer/favicon.svg` | 提交 | 霁雪雪花图标。 |
-| `src/renderer/src/main.tsx` | 提交 | 创建 React Root，加载应用与全局样式。 |
-| `src/renderer/src/App.tsx` | 提交 | Codex 风格侧栏、对话区、状态展示、输入框和 Bridge 事件订阅。 |
-| `src/renderer/src/state.ts` | 提交 | 用纯 reducer 管理消息、请求、Token、耗时和 Bridge 状态。 |
-| `src/renderer/src/styles.css` | 提交 | 中性浅色工作台的布局、排版、Markdown、响应式和动效。 |
-| `src/renderer/src/env.d.ts` | 提交 | 引入 Vite 类型并声明 Renderer 的 `window.jixue` 类型。 |
-| `src/renderer/src/state.test.ts` | 本地 | 验证 reducer 的流式追加、完成和错误收口，不进入 Git。 |
-
-### 桌面工程配置
-
-| 文件 | 类型 | 职责 |
-| --- | --- | --- |
-| `electron.vite.config.ts` | 提交 | 分别配置 Main、Preload 和 Renderer 的构建入口。 |
-| `package.json` | 提交 | 声明桌面依赖以及 dev/build/test/typecheck 命令。 |
-| `tsconfig.json` | 提交 | TypeScript 严格模式、JSX 和路径检查配置。 |
-
-`apps/desktop/out/` 是构建产物，`node_modules/` 是安装依赖，两者均为生成内容，不提交。
-
-## 3. `src/jixue`：Python 主源码
-
-```text
-src/jixue/
-├─ bridge/
-│  ├─ __init__.py
-│  ├─ __main__.py
-│  ├─ application.py
-│  ├─ bootstrap.py
-│  └─ server.py
-├─ domain/
-│  ├─ __init__.py
-│  ├─ conversation.py
-│  ├─ events.py
-│  └─ messages.py
-├─ llm/
-│  ├─ adapters/
-│  │  ├─ __init__.py
-│  │  └─ anthropic_client.py
-│  ├─ __init__.py
-│  ├─ base.py
-│  ├─ config.py
-│  ├─ factory.py
-│  └─ fake.py
-└─ __init__.py
-```
-
-### Python 包根
-
-| 文件 | 类型 | 职责 |
-| --- | --- | --- |
-| `src/jixue/__init__.py` | 提交 | 声明 Python 包和当前版本。 |
-
-### `domain`：纯领域类型
-
-| 文件 | 类型 | 职责 |
-| --- | --- | --- |
-| `domain/__init__.py` | 提交 | 导出领域层公共类型。 |
-| `domain/conversation.py` | 提交 | 定义仅含 role/content 的 `APIMessage`，维护内部消息列表，并按过滤、清理、合并、交替校验生成 API 历史。 |
-| `domain/events.py` | 提交 | 定义 NDJSON `Envelope`、协议版本、序列化和协议错误。 |
-| `domain/messages.py` | 提交 | 定义消息角色、状态、用量和内部消息元数据。 |
-
-这里不能导入 Anthropic、Electron 或 MCP SDK。
-
-### `llm`：模型领域接口
-
-| 文件 | 类型 | 职责 |
-| --- | --- | --- |
-| `llm/__init__.py` | 提交 | 导出 LLM 接口、领域错误和 FakeLLM，调用方不必知道各文件位置。 |
-| `llm/base.py` | 提交 | 定义供应商无关的 `LLMClient` Protocol；`stream()` 接收完整 `Sequence[APIMessage]`，并返回统一流事件或安全领域错误。 |
-| `llm/config.py` | 提交 | 安全读取默认/本地 YAML、展开环境变量、校验模型目录，并生成严格四字段 `LLMConfig`；也提供只读诊断入口。 |
-| `llm/factory.py` | 提交 | 根据 `LLMConfig.protocol` 选择适配器；未知协议返回领域错误，不让上层写供应商分支。 |
-| `llm/fake.py` | 提交 | 接收完整历史，使用最后一条用户内容生成确定性 Markdown，并按整段历史估算 Token，用于离线多轮开发。 |
-| `llm/adapters/__init__.py` | 提交 | 声明供应商适配器边界，提醒上层不能从这里取出 SDK 类型。 |
-| `llm/adapters/anthropic_client.py` | 提交 | 唯一允许导入 `anthropic` 的正式源码；把全部 `APIMessage` 转为官方 `MessageParam`，消费文本流、读取最终用量、启用提示缓存并翻译 SDK 异常。 |
-
-真实 `anthropic` SDK 现在只出现在 `llm/adapters` 子目录中。`tests/test_architecture.py` 会扫描整个 Python 源码，防止以后误把 SDK 导入 Bridge、领域层或工厂。
-
-### `bridge`：进程协议入口
-
-| 文件 | 类型 | 职责 |
-| --- | --- | --- |
-| `bridge/__init__.py` | 提交 | 声明 Bridge 包。 |
-| `bridge/__main__.py` | 提交 | 支持 `python -m jixue.bridge` 启动服务。 |
-| `bridge/application.py` | 提交 | 处理握手与聊天；串行维护 `ConversationManager`，每轮发送完整历史、累计回复与 Token，再把 LLM 事件转成 UI 信封。 |
-| `bridge/bootstrap.py` | 提交 | 用 `load_project_environment()` 合并系统环境与项目 `.env`（项目值优先），再按 fake/configured 和模型目录 ID 组装本进程唯一的 `LLMClient`。 |
-| `bridge/server.py` | 提交 | 异步读取 stdin、限制单行大小、串行写 stdout；启动时调用 bootstrap，配置错误只写 stderr。 |
-
-## 4. `config`：可提交配置
-
-| 文件 | 类型 | 职责 |
-| --- | --- | --- |
-| `config/models.yaml` | 提交 | 描述 Flash、Pro、Vision Exp 三个模型目录；Key 只写环境变量占位符。 |
-
-本地覆盖应放在 `config/models.local.yaml`，该文件被忽略，不提交。
-
-## 5. `scripts`：开发命令
-
-| 文件 | 类型 | 职责 |
-| --- | --- | --- |
-| `scripts/test-all.ps1` | 提交 | 在 `mycoder` 中运行本地 Python 测试，再运行前端本地测试。 |
-
-脚本本身属于开发基础设施，可以提交；它调用的具体测试源码只保留在本地。
-
-## 6. `tests`：本地自动化测试
-
-整个目录为**本地内容，不进入 Git**，但当前开发机继续保留和运行：
+## Python 后端
 
 | 文件 | 职责 |
 | --- | --- |
-| `tests/domain/test_events.py` | 验证信封序列化、协议版本和错误输入。 |
-| `tests/domain/test_conversation.py` | 验证消息过滤、相邻角色合并、内部历史不变、重复 ID、空历史和错误开头；不访问网络。 |
-| `tests/bridge/test_application.py` | 验证握手、流式顺序、错误信封、完整两轮历史、连续十轮顺序与累计 Token，并确认半截失败回复只供 UI 复盘、不进入下一轮 API。 |
-| `tests/bridge/test_bootstrap.py` | 验证默认离线、项目 `.env` 覆盖系统环境、configured 目录选择、缺 Key 可恢复错误和非法启动配置；不访问网络。 |
-| `tests/llm/test_config.py` | 验证默认三模型、缺 Key 降级、环境变量脱敏、本地覆盖和坏目录拒绝。 |
-| `tests/llm/test_anthropic_client.py` | 用本地假 SDK 流验证请求参数、事件顺序、延迟创建、客户端复用和类型化错误翻译；不访问网络。 |
-| `tests/test_architecture.py` | 防止领域层导入外部 SDK，并保证 `anthropic` 只能出现在适配器目录。 |
-| `tests/ui/smoke_renderer.py` | 用本机 Chrome 和 Mock Bridge 检查真实 Renderer 布局、交互和控制台。 |
-| `tests/ui/smoke_electron.mjs` | 启动真实 Electron，覆盖 Main、Preload、Bridge、Renderer，并检查退出错误。 |
+| `src/jixue/domain/conversation.py` | 消息结构、多轮历史和发给 API 前的清洗 |
+| `src/jixue/domain/events.py` | Electron 与 Python 之间的一行 JSON 信封 |
+| `src/jixue/llm/base.py` | 霁雪自己的 LLM 接口和流式事件 |
+| `src/jixue/llm/fake.py` | 离线模拟 LLM，方便免费测试全链路 |
+| `src/jixue/llm/config.py` | 从 `models.yaml` 和环境中生成四字段配置 |
+| `src/jixue/llm/adapters/anthropic_client.py` | 唯一接触 Anthropic SDK 的适配器 |
+| `src/jixue/bridge/bootstrap.py` | 读取项目根目录 `.env`，选择 Fake 或真实 LLM |
+| `src/jixue/bridge/application.py` | 一轮聊天的业务核心：历史 → LLM → UI 事件 |
+| `src/jixue/bridge/server.py` | 从 stdin 收 JSON，从 stdout 发 JSON |
+| `src/jixue/bridge/__main__.py` | 让 `python -m jixue.bridge` 能启动 |
 
-`artifacts/ui/` 保存本地测试截图，也是本地生成内容，不提交。
+`domain` 不知道 Electron 和 Anthropic 的存在；`adapters` 专门藏住外部 SDK；`bridge` 把桌面端和 Python 业务接起来。
 
-## 7. `docs`：设计与复盘
+## Electron 桌面端
 
-| 文件或目录 | 类型 | 职责 |
-| --- | --- | --- |
-| `docs/ROADMAP.md` | 提交 | 一周开发顺序、各章小步、测试重点和退出条件。 |
-| `docs/ARCHITECTURE.md` | 提交 | 稳定架构边界、进程数据流和核心协议。 |
-| `docs/PROJECT_STRUCTURE.md` | 提交 | 当前文件树和每个文件的职责，也就是本文。 |
-| `docs/DEVELOPMENT_GUIDE.md` | 提交 | 中文注释、开发循环、测试、密钥和 Git 约定。 |
-| `docs/templates/` | 提交 | 新章节教学、开发日志、手测记录的中文模板。 |
-| `docs/chapters/00-foundation/` | 提交 | 第 0 章工程基线的教学、日志和手测。 |
-| `docs/chapters/01-llm-ui/` | 提交 | 第一章 LLM/UI 的教学、日志和手测。 |
-| `docs/chapters/01-llm-ui/MESSAGE_FLOW.md` | 提交 | 第一章最短主链路；只用核心代码和伪代码串起 Renderer、Electron、Python、对话历史、LLM 和返回事件，供第一次阅读。 |
+| 文件 | 职责 |
+| --- | --- |
+| `apps/desktop/src/main/index.ts` | 创建窗口、启动/关闭 Python、转发 IPC |
+| `apps/desktop/src/main/bridge-process.ts` | 启动 Conda 子进程并处理一行一个 JSON |
+| `apps/desktop/src/preload/index.ts` | 只向网页暴露安全的聊天接口 |
+| `apps/desktop/src/shared/protocol.ts` | 前后端共用的事件类型 |
+| `apps/desktop/src/renderer/src/App.tsx` | 聊天页面和事件接收 |
+| `apps/desktop/src/renderer/src/state.ts` | reducer：根据事件更新消息、状态和用量 |
+| `apps/desktop/src/renderer/src/styles.css` | Codex 风格的界面样式 |
+| `apps/desktop/src/renderer/src/main.tsx` | React 页面入口 |
 
-每个章节目录固定包含：
+其余 `electron.vite.config.ts`、`tsconfig.json` 和各级 `package.json` 是构建配置，不参与一条消息的业务处理。
 
-- `README.md`：概念、设计边界、小步实现和代码导航。
-- `DEVLOG.md`：改动、错误、修复、取舍和验证结果。
-- `MANUAL_TEST.md`：开发者可以照着执行的手动测试步骤。
+## 配置和文档
 
-## 8. 运行时与生成目录
+| 文件 | 职责 |
+| --- | --- |
+| `config/models.yaml` | 三个模型的短名称和真实模型 ID |
+| `docs/ROADMAP.md` | 章节顺序和一周范围 |
+| `docs/chapters/00-foundation/README.md` | 环境准备、启动和测试 |
+| `docs/chapters/01-llm-ui/README.md` | 第一章代码和完整消息链路 |
+| `scripts/test-all.ps1` | 顺序执行本地自动化检查 |
 
-以下内容不属于源码，已经由 `.gitignore` 排除：
-
-| 路径 | 来源 | 是否可删除后重建 |
-| --- | --- | --- |
-| `node_modules/` | `npm install` | 是。 |
-| `apps/desktop/out/` | `npm run build` | 是。 |
-| `artifacts/` | UI 冒烟测试截图 | 是。 |
-| `.pytest_cache/`、`.mypy_cache/`、`.ruff_cache/` | Python 工具 | 是。 |
-| `.jixue/`、`sessions/`、`memories/`、`tool-results/` | 未来运行数据 | 不应提交；删除前需确认是否含用户数据。 |
-| `.env`、`config/*.local.*` | 本地密钥和覆盖配置 | 不可从仓库恢复，应由开发者自行保管。 |
-
-## 9. 新增文件时怎么维护本文
-
-每次新增文件至少完成三件事：
-
-1. 把它放进符合职责的目录；不要创建只有一层转发意义的空目录。
-2. 在本文对应章节增加一行，说明它的输入、输出或边界职责。
-3. 在当前章节 `DEVLOG.md` 记录新增原因，并在交付时告诉用户如何启动和测试；未得到明确要求前不提交 Git。
+每章目录只允许有一个 `README.md`。测试文件虽然存在于本机，但由 `.gitignore` 排除，不会提交。

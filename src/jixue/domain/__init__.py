@@ -1,11 +1,15 @@
-"""不依赖外部 SDK 的领域模型公共出口。
+"""霁雪自己的领域类型，不依赖任何外部 SDK。"""
 
-__all__ 明确告诉阅读者和工具：从 jixue.domain 导入时，哪些名称属于稳定公共接口。
-"""
-
-from jixue.domain.conversation import APIMessage, ConversationError, ConversationManager
+from jixue.domain.conversation import (
+    APIMessage,
+    ConversationError,
+    ConversationManager,
+    Message,
+    MessageStatus,
+    Role,
+    Usage,
+)
 from jixue.domain.events import Envelope, ProtocolError
-from jixue.domain.messages import Message, MessageStatus, Role, Usage
 
 __all__ = [
     "APIMessage",

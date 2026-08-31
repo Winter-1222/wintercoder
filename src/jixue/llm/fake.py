@@ -5,8 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Sequence
 
-from jixue.domain.conversation import APIMessage
-from jixue.domain.messages import Usage
+from jixue.domain.conversation import APIMessage, Usage
 from jixue.llm.base import LLMEventType, LLMStreamEvent
 
 
@@ -40,7 +39,6 @@ class FakeLLMClient:
             "- Python Bridge 正常\n"
             "- NDJSON 事件流正常\n"
             "- Electron 可以继续接收下一轮消息\n\n"
-            "- 这是我的第一次修改"
             "当前使用的是 `FakeLLM`，所以不会产生 API 费用。"
         )
 
