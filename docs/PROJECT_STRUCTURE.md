@@ -32,6 +32,10 @@ myAgent/
 | `src/jixue/bridge/application.py` | 一轮聊天的业务核心：历史 → LLM → UI 事件 |
 | `src/jixue/bridge/server.py` | 从 stdin 收 JSON，从 stdout 发 JSON |
 | `src/jixue/bridge/__main__.py` | 让 `python -m jixue.bridge` 能启动 |
+| `src/jixue/tools/base.py` | 工具合同、ToolResult 和通用 BaseTool |
+| `src/jixue/tools/registry.py` | 注册、启用、禁用和导出工具定义 |
+| `src/jixue/tools/read_file.py` | 第一个只读文件工具工厂 |
+| `src/jixue/tools/__init__.py` | 工具层公开导入入口 |
 
 `domain` 不知道 Electron 和 Anthropic 的存在；`adapters` 专门藏住外部 SDK；`bridge` 把桌面端和 Python 业务接起来。
 
@@ -58,6 +62,7 @@ myAgent/
 | `docs/ROADMAP.md` | 章节顺序和一周范围 |
 | `docs/chapters/00-foundation/README.md` | 环境准备、启动和测试 |
 | `docs/chapters/01-llm-ui/README.md` | 第一章代码和完整消息链路 |
+| `docs/chapters/02-tools/README.md` | 第二章工具底座和执行链路 |
 | `scripts/test-all.ps1` | 顺序执行本地自动化检查 |
 
 每章目录只允许有一个 `README.md`。测试文件虽然存在于本机，但由 `.gitignore` 排除，不会提交。

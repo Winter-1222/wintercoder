@@ -2,7 +2,7 @@
 
 霁雪是一个从零学习 Agent Harness 的小项目。名字来自“雪后初晴”。
 
-当前只完成第一章：把用户消息从 Electron 界面交给 Python，再由 LLM 流式返回。工具系统、Agent Loop、权限、MCP 等功能都还没有开始。
+第一章聊天链路已经完成。第二章刚完成最小工具底座：工具合同、注册中心和 `read_file`；它们还没有接入 LLM 和界面。Agent Loop、权限、MCP 等功能尚未开始。
 
 ## 现在能做什么
 
@@ -57,5 +57,6 @@ npm run test:electron
 - [目录说明](docs/PROJECT_STRUCTURE.md)
 - [第 0 章：工程准备](docs/chapters/00-foundation/README.md)
 - [第 1 章：让 AI 开口说话](docs/chapters/01-llm-ui/README.md)
+- [第 2 章：工具系统](docs/chapters/02-tools/README.md)
 
 第一章 README 是理解当前代码的主入口。每章只保留一个 README，不再拆成许多文档。
