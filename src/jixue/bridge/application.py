@@ -6,23 +6,38 @@ BridgeApplication 是“协议运输”和“模型领域”之间的应用层�
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from time import perf_counter
-from typing import Any
 from uuid import uuid4
 
 from jixue import __version__
+from jixue.domain.conversation import ConversationError, ConversationManager
 from jixue.domain.events import Envelope
+from jixue.domain.messages import Message, MessageStatus, Usage
 from jixue.llm.base import LLMClient, LLMClientError, LLMEventType
 
 
 class BridgeApplication:
     """不依赖标准输入输出的 Bridge 应用核心，便于单元测试。"""
 
-    def __init__(self, llm: LLMClient) -> None:
-        """接收任何符合 LLMClient 合同的实现；当前传入 FakeLLMClient。"""
+    def __init__(
+        self,
+        llm: LLMClient,
+        conversation: ConversationManager | None = None,
+    ) -> None:
+        """注入模型和可选历史；不传历史时创建一份当前进程内的会话。"""
 
         self._llm = llm
+        self._conversation = conversation or ConversationManager()
+        # 当前 UI 一次只发一条；锁也保护协议调用者，避免两个并发请求交叉改写同一历史。
+        self._chat_lock = asyncio.Lock()
+
+    @property
+    def messages(self) -> tuple[Message, ...]:
+        """返回内部历史快照，供测试和未来会话持久化读取。"""
+
+        return self._conversation.messages
 
     async def handle(self, command: Envelope) -> AsyncIterator[Envelope]:
         """处理一条命令并产生零到多个事件。"""
@@ -59,7 +74,7 @@ class BridgeApplication:
         )
 
     async def _handle_chat(self, command: Envelope) -> AsyncIterator[Envelope]:
-        """校验 chat.send，调用 LLM 流，并把领域事件映射为 Bridge 信封。"""
+        """校验 chat.send，并串行处理当前单会话中的一轮聊天。"""
 
         text = command.payload.get("text")
         if not isinstance(text, str) or not text.strip():
@@ -72,16 +87,44 @@ class BridgeApplication:
             )
             return
 
+        async with self._chat_lock:
+            # 锁覆盖“加入用户消息 → 模型完成 → 保存助手消息”，保证轮次不会交叉。
+            async for event in self._run_chat(command, text.strip()):
+                yield event
+
+    async def _run_chat(
+        self,
+        command: Envelope,
+        text: str,
+    ) -> AsyncIterator[Envelope]:
+        """把一轮消息写入历史、调用 LLM，并保存完整助手回复。"""
+
         # sequence 在同一个 request_id 内单调递增，帮助接收方识别事件先后顺序。
         sequence = 0
         # 所有文本分片共享同一个 message_id，表示它们属于同一条 assistant 消息。
         message_id = f"msg_{uuid4().hex}"
         # perf_counter 适合计算耗时，不受系统时钟手动调整影响。
         started_at = perf_counter()
+        assistant_chunks: list[str] = []
+        turn_usage = Usage()
+
+        # 先加入本轮 user，再转换；因此每次 API 请求都以当前问题结尾。
+        self._conversation.add_user(text)
+        try:
+            api_messages = self._conversation.to_api_format()
+        except ConversationError as error:
+            yield self._error(
+                command.request_id,
+                "conversation_invalid",
+                str(error),
+                scope="request",
+            )
+            return
 
         try:
-            async for llm_event in self._llm.stream(text):
+            async for llm_event in self._llm.stream(api_messages):
                 if llm_event.type == LLMEventType.TEXT:
+                    assistant_chunks.append(llm_event.text)
                     # 只放新增片段，不重复发送之前已经输出的完整内容。
                     yield Envelope.create(
                         "stream_text",
@@ -91,25 +134,42 @@ class BridgeApplication:
                     )
                     sequence += 1
                 elif llm_event.type == LLMEventType.USAGE:
-                    # 当前还没有多轮累计器，所以 turn 和 cumulative 暂时使用同一份用量。
+                    turn_usage = llm_event.usage
+                    cumulative = self._add_usage(
+                        self._conversation.total_usage,
+                        turn_usage,
+                    )
                     yield Envelope.create(
                         "usage",
                         command.request_id,
                         sequence,
                         {
                             "turn": self._usage_payload(llm_event.usage),
-                            "cumulative": self._usage_payload(llm_event.usage),
+                            "cumulative": self._usage_payload(cumulative),
                         },
                     )
                     sequence += 1
                 elif llm_event.type == LLMEventType.COMPLETE:
+                    # COMPLETE 通常重复携带最终 usage；以它为最终事实，兼容没有单独 USAGE 的实现。
+                    turn_usage = llm_event.usage
+                    turn_index = 1 + sum(
+                        message.role == "assistant"
+                        and message.status is MessageStatus.COMPLETE
+                        for message in self._conversation.messages
+                    )
+                    assistant_text = "".join(assistant_chunks)
+                    if assistant_text:
+                        self._conversation.add_assistant(
+                            assistant_text,
+                            usage=turn_usage,
+                        )
                     # 完成事件是 UI 的收口信号：停止计时、解锁发送并渲染 Markdown。
                     yield Envelope.create(
                         "turn_complete",
                         command.request_id,
                         sequence,
                         {
-                            "turn_index": 1,
+                            "turn_index": turn_index,
                             "stop_reason": llm_event.stop_reason or "end_turn",
                             "duration_ms": round((perf_counter() - started_at) * 1000),
                             "model": self._llm.model_name,
@@ -117,6 +177,7 @@ class BridgeApplication:
                         },
                     )
         except LLMClientError as error:
+            self._remember_failed_assistant(assistant_chunks)
             # 适配器已经把 SDK 异常翻译成安全的领域错误，Bridge 只负责协议包装。
             yield self._error(
                 command.request_id,
@@ -127,6 +188,7 @@ class BridgeApplication:
                 sequence=sequence,
             )
         except Exception:
+            self._remember_failed_assistant(assistant_chunks)
             # 未预期异常不把 repr 或请求内容回显给 UI，避免意外泄露敏感数据。
             yield self._error(
                 command.request_id,
@@ -137,9 +199,28 @@ class BridgeApplication:
                 sequence=sequence,
             )
 
+    def _remember_failed_assistant(self, chunks: list[str]) -> None:
+        """保留 UI 已看到的半截回复，但标记 failed，使它不会进入下一轮 API 历史。"""
+
+        partial_text = "".join(chunks)
+        if partial_text:
+            self._conversation.add_assistant(
+                partial_text,
+                status=MessageStatus.FAILED,
+            )
+
     @staticmethod
-    def _usage_payload(usage: Any) -> dict[str, int]:
-        """把 Usage 一类对象收窄为适合 JSON 传输的两个普通整数。"""
+    def _add_usage(first: Usage, second: Usage) -> Usage:
+        """相加两份不可变 Usage，返回新对象而不修改历史。"""
+
+        return Usage(
+            input_tokens=first.input_tokens + second.input_tokens,
+            output_tokens=first.output_tokens + second.output_tokens,
+        )
+
+    @staticmethod
+    def _usage_payload(usage: Usage) -> dict[str, int]:
+        """把 Usage 转成适合 JSON 传输的两个普通整数。"""
 
         return {
             "input_tokens": int(usage.input_tokens),

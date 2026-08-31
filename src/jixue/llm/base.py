@@ -6,11 +6,12 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Protocol
 
+from jixue.domain.conversation import APIMessage
 from jixue.domain.messages import Usage
 
 
@@ -61,5 +62,5 @@ class LLMClient(Protocol):
     def model_name(self) -> str:
         """返回用于 UI 展示的模型名。"""
 
-    def stream(self, prompt: str) -> AsyncIterator[LLMStreamEvent]:
-        """接收当前提示词，按产生顺序异步返回零到多个领域事件。"""
+    def stream(self, messages: Sequence[APIMessage]) -> AsyncIterator[LLMStreamEvent]:
+        """接收完整、干净的对话历史，按产生顺序返回领域事件。"""

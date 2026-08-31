@@ -154,12 +154,12 @@ src/jixue/
 | 文件 | 类型 | 职责 |
 | --- | --- | --- |
 | `llm/__init__.py` | 提交 | 导出 LLM 接口、领域错误和 FakeLLM，调用方不必知道各文件位置。 |
-| `llm/base.py` | 提交 | 定义供应商无关的 `LLMClient` Protocol、流事件和可安全公开的 `LLMClientError`。 |
+| `llm/base.py` | 提交 | 定义供应商无关的 `LLMClient` Protocol；`stream()` 接收完整 `Sequence[APIMessage]`，并返回统一流事件或安全领域错误。 |
 | `llm/config.py` | 提交 | 安全读取默认/本地 YAML、展开环境变量、校验模型目录，并生成严格四字段 `LLMConfig`；也提供只读诊断入口。 |
 | `llm/factory.py` | 提交 | 根据 `LLMConfig.protocol` 选择适配器；未知协议返回领域错误，不让上层写供应商分支。 |
-| `llm/fake.py` | 提交 | 产生确定性 Markdown 文本、Token 和完成事件，用于离线开发。 |
+| `llm/fake.py` | 提交 | 接收完整历史，使用最后一条用户内容生成确定性 Markdown，并按整段历史估算 Token，用于离线多轮开发。 |
 | `llm/adapters/__init__.py` | 提交 | 声明供应商适配器边界，提醒上层不能从这里取出 SDK 类型。 |
-| `llm/adapters/anthropic_client.py` | 提交 | 唯一允许导入 `anthropic` 的正式源码；创建异步客户端、消费文本流、读取最终用量、启用提示缓存并翻译 SDK 异常。 |
+| `llm/adapters/anthropic_client.py` | 提交 | 唯一允许导入 `anthropic` 的正式源码；把全部 `APIMessage` 转为官方 `MessageParam`，消费文本流、读取最终用量、启用提示缓存并翻译 SDK 异常。 |
 
 真实 `anthropic` SDK 现在只出现在 `llm/adapters` 子目录中。`tests/test_architecture.py` 会扫描整个 Python 源码，防止以后误把 SDK 导入 Bridge、领域层或工厂。
 
@@ -169,7 +169,7 @@ src/jixue/
 | --- | --- | --- |
 | `bridge/__init__.py` | 提交 | 声明 Bridge 包。 |
 | `bridge/__main__.py` | 提交 | 支持 `python -m jixue.bridge` 启动服务。 |
-| `bridge/application.py` | 提交 | 处理 `bridge.hello` 和 `chat.send`，在握手中声明实际模型，把 LLM 事件转成 UI 信封，并把安全领域错误包装成可恢复的 `error` 信封。 |
+| `bridge/application.py` | 提交 | 处理握手与聊天；串行维护 `ConversationManager`，每轮发送完整历史、累计回复与 Token，再把 LLM 事件转成 UI 信封。 |
 | `bridge/bootstrap.py` | 提交 | 用 `load_project_environment()` 合并系统环境与项目 `.env`（项目值优先），再按 fake/configured 和模型目录 ID 组装本进程唯一的 `LLMClient`。 |
 | `bridge/server.py` | 提交 | 异步读取 stdin、限制单行大小、串行写 stdout；启动时调用 bootstrap，配置错误只写 stderr。 |
 
@@ -197,7 +197,7 @@ src/jixue/
 | --- | --- |
 | `tests/domain/test_events.py` | 验证信封序列化、协议版本和错误输入。 |
 | `tests/domain/test_conversation.py` | 验证消息过滤、相邻角色合并、内部历史不变、重复 ID、空历史和错误开头；不访问网络。 |
-| `tests/bridge/test_application.py` | 验证握手、FakeLLM 流式顺序、Token、完成事件和领域错误信封。 |
+| `tests/bridge/test_application.py` | 验证握手、流式顺序、错误信封、完整两轮历史、连续十轮顺序与累计 Token，并确认半截失败回复只供 UI 复盘、不进入下一轮 API。 |
 | `tests/bridge/test_bootstrap.py` | 验证默认离线、项目 `.env` 覆盖系统环境、configured 目录选择、缺 Key 可恢复错误和非法启动配置；不访问网络。 |
 | `tests/llm/test_config.py` | 验证默认三模型、缺 Key 降级、环境变量脱敏、本地覆盖和坏目录拒绝。 |
 | `tests/llm/test_anthropic_client.py` | 用本地假 SDK 流验证请求参数、事件顺序、延迟创建、客户端复用和类型化错误翻译；不访问网络。 |
@@ -218,6 +218,7 @@ src/jixue/
 | `docs/templates/` | 提交 | 新章节教学、开发日志、手测记录的中文模板。 |
 | `docs/chapters/00-foundation/` | 提交 | 第 0 章工程基线的教学、日志和手测。 |
 | `docs/chapters/01-llm-ui/` | 提交 | 第一章 LLM/UI 的教学、日志和手测。 |
+| `docs/chapters/01-llm-ui/MESSAGE_FLOW.md` | 提交 | 第一章最短主链路；只用核心代码和伪代码串起 Renderer、Electron、Python、对话历史、LLM 和返回事件，供第一次阅读。 |
 
 每个章节目录固定包含：
 

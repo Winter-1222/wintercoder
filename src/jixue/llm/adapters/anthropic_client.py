@@ -3,17 +3,17 @@
 这是正式源码中唯一允许 `import anthropic` 的边界。SDK 的客户端、消息参数、流对象和
 异常都不能离开本文件；上游只会收到霁雪自己的 `LLMStreamEvent` 或 `LLMClientError`。
 
-当前小步只处理文本、Token 和停止原因。工具调用块会在第二章扩展，完整多轮消息会在
-本章后续由 ConversationManager 提供。
+当前小步处理多轮文本、Token 和停止原因。工具调用块会在第二章扩展。
 """
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 
 import anthropic
 from anthropic.types import MessageParam
 
+from jixue.domain.conversation import APIMessage
 from jixue.domain.messages import Usage
 from jixue.llm.base import (
     LLMClientError,
@@ -66,8 +66,11 @@ class AnthropicLLMClient:
 
         return self._config.model
 
-    async def stream(self, prompt: str) -> AsyncIterator[LLMStreamEvent]:
-        """发送单条用户文本，并按“文本 → 用量 → 完成”顺序产生领域事件。
+    async def stream(
+        self,
+        messages: Sequence[APIMessage],
+    ) -> AsyncIterator[LLMStreamEvent]:
+        """发送完整对话历史，并按“文本 → 用量 → 完成”顺序产生领域事件。
 
         `messages.stream()` 返回异步上下文管理器。进入 `async with` 后网络流才真正开始；
         `text_stream` 每次只给新增文字；完全消费流后，等待 `get_final_message()` 从
@@ -75,15 +78,19 @@ class AnthropicLLMClient:
         """
 
         client = self._get_client()
-        messages: list[MessageParam] = [{"role": "user", "content": prompt}]
+        # SDK 的 MessageParam 只在适配器内部出现；上层始终使用霁雪自己的 APIMessage。
+        sdk_messages: list[MessageParam] = [
+            {"role": message.role, "content": message.content}
+            for message in messages
+        ]
 
         try:
             async with client.messages.stream(
                 model=self._config.model,
                 max_tokens=self._max_tokens,
-                messages=messages,
+                messages=sdk_messages,
                 # 顶层自动缓存会把最后一个可缓存块设为断点。当前单轮短消息通常达不到
-                # 最小缓存长度；ConversationManager 加入稳定历史后，前缀才能产生读命中。
+                # 多轮历史形成稳定前缀后有机会命中；是否命中仍要看服务端 usage 证据。
                 cache_control={"type": "ephemeral"},
             ) as stream:
                 async for text in stream.text_stream:

@@ -133,10 +133,10 @@ models:
 
 ```text
 LLMClient.model_name -> str
-LLMClient.stream(prompt: str) -> AsyncIterator[LLMStreamEvent]
+LLMClient.stream(messages: Sequence[APIMessage]) -> AsyncIterator[LLMStreamEvent]
 ```
 
-`ConversationManager` 和供应商无关的 `APIMessage` 已经建立，但当前 `LLMClient` 仍保留 `prompt: str` 最小接口；下一小步才把两者接线。分步实现能先独立验证历史清洗规则，再改变真实请求边界。
+`BridgeApplication` 每轮先把 user 加入 `ConversationManager`，再把完整 `APIMessage` 历史交给 `LLMClient`。Anthropic 适配器只在内部把它转换成官方 `MessageParam`；FakeLLM 也使用相同历史接口。
 
 `anthropic.AsyncAnthropic`、SDK 消息参数、流对象和 SDK 异常只能出现在 `llm/adapters/anthropic_client.py` 中。SDK 文本与最终 Message 必须先转换成 `LLMStreamEvent`，SDK 异常必须先转换成 `LLMClientError`，才能离开适配器。
 
@@ -185,8 +185,8 @@ Electron Main 把 Python 工作目录固定为项目根目录
 5. 校验第一条必须是 user，并守住 user/assistant 交替不变量。
 6. 返回新的 `APIMessage` 列表，绝不原地修改内部历史。
 
-第二章加入内容块后，再扩展 `tool_use` 与 `tool_result` 的引用校验。当前管理器尚未注入
-`BridgeApplication`，因此 Electron 第二次发送仍只把当前文本传给 LLM；这是下一小步的接线范围。
+第二章加入内容块后，再扩展 `tool_use` 与 `tool_result` 的引用校验。当前同一
+`BridgeApplication` 实例维护一份内存会话，并用异步锁保证两个聊天轮次不会交叉改写历史。
 
 ## 6. 桥接事件协议
 

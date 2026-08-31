@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 
+from jixue.domain.conversation import APIMessage
 from jixue.domain.messages import Usage
 from jixue.llm.base import LLMEventType, LLMStreamEvent
 
@@ -23,11 +24,16 @@ class FakeLLMClient:
 
         return "fake-jixue"
 
-    async def stream(self, prompt: str) -> AsyncIterator[LLMStreamEvent]:
-        """把一段 Markdown 按不规则边界拆成文本增量。"""
+    async def stream(
+        self,
+        messages: Sequence[APIMessage],
+    ) -> AsyncIterator[LLMStreamEvent]:
+        """读取完整历史，并把固定 Markdown 按不规则边界拆成文本增量。"""
 
+        # ConversationManager 保证最后一条是本轮用户输入；防御性回退只用于直接调用。
+        latest_content = messages[-1].content if messages else ""
         # 只回显前 28 个字符并把换行改为空格，避免固定回复被超长输入撑大。
-        preview = prompt.strip().replace("\n", " ")[:28] or "空消息"
+        preview = latest_content.strip().replace("\n", " ")[:28] or "空消息"
         response = (
             "## 霁雪已经醒来\n\n"
             f"我收到了你的消息：**{preview}**\n\n"
@@ -54,8 +60,9 @@ class FakeLLMClient:
             yield LLMStreamEvent(type=LLMEventType.TEXT, text=chunk)
 
         # FakeLLM 没有真实 tokenizer，仅用约 4 字符/Token 的保守估算验证状态栏。
+        history_characters = sum(len(message.content) for message in messages)
         usage = Usage(
-            input_tokens=max(1, (len(prompt) + 3) // 4),
+            input_tokens=max(1, (history_characters + 3) // 4),
             output_tokens=max(1, (len(response) + 3) // 4),
         )
         # 文本全部发送后，依次产生用量和完成事件，顺序与真实流式调用保持一致。

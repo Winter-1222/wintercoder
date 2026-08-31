@@ -1,6 +1,6 @@
 # 第 1 章手动测试
 
-> 本记录已验收 A 步 FakeLLM 流式链路、B 步模型配置加载、C 步本地假 SDK 适配器和 D 步 Bridge 模型模式接线；真实 DeepSeek 网络请求与多轮历史尚未验收。
+> 本记录已完成第一章的本地自动化验收：FakeLLM/配置/适配器/Bridge/完整历史/十轮顺序/失败流隔离/桌面退出均已覆盖。真实 DeepSeek 会联网并可能产生费用，因此只保留为用户手动验收项。
 
 ## 测试环境
 
@@ -39,7 +39,7 @@
 - 预期结果：模型显示 `fake-jixue`；Token 大于零；耗时在生成时变化、完成后停止；第二次发送正常开始。
 - 实际结果：四项状态均更新，第二个请求在首个请求结束后可发送。
 - 结论：通过。
-- 注意：这只证明 UI 支持连续多次请求，不代表完整对话历史已经发送给模型。
+- 注意：界面观察只能证明连续发送可用；完整历史是否真的进入模型由用例 13、14 的内部断言证明。
 
 ## 用例 3：真实 Electron 自动化回归
 
@@ -59,7 +59,7 @@
   3. 执行 `conda run --no-capture-output -n mycoder ruff check .`。
   4. 执行 `conda run --no-capture-output -n mycoder mypy src`。
 - 预期结果：所有命令退出码为 0。
-- 实际结果：Python 33 项、前端 2 项、Ruff、Mypy 和 TypeScript 全部通过。
+- 实际结果：2026-08-31 复测，Python 44 项、前端 2 项、Ruff、Mypy 17 个源码文件和 TypeScript 全部通过。
 - 结论：通过。
 
 ## 用例 5：Codex 风格布局
@@ -93,12 +93,12 @@
   2. 执行 `conda run --no-capture-output -n mycoder python -m pytest tests/llm/test_anthropic_client.py tests/bridge/test_application.py -vv`。
   3. 观察测试名称中是否包含 stream、lazy、credentials、typed errors 和 factory。
 - 预期结果：
-  1. 13 项测试全部通过。
+  1. 当前 16 项测试全部通过。
   2. 测试不打开 Electron，不访问 DeepSeek，不产生费用。
   3. 事件顺序是若干 `TEXT`，然后 `USAGE`，最后 `COMPLETE`。
   4. 请求包含配置里的 model、base_url、api_key，以及 `cache_control={"type": "ephemeral"}`。
   5. 认证、限流、连接和服务端错误被转换成安全的 `LLMClientError`。
-- 实际结果：2026-08-30 执行通过，13 项测试全部通过。
+- 实际结果：2026-08-31 随第一章收尾复测，16 项测试全部通过。
 - 结论：通过。
 - 注意：假 SDK 测试证明“我们的封装逻辑正确”，不证明真实 Key、网络、账户权限或服务端当前可用。
 
@@ -176,9 +176,48 @@
   4. 重复 ID、空结果和 assistant 开头得到中文 `ConversationError`。
 - 实际结果：2026-08-31 定向测试 7 项通过。
 - 结论：通过。
-- 注意：本步尚未接入 Bridge；Electron 连续发送仍不是多轮对话。
+- 注意：该条记录描述 E 步当时的边界；F 步现已完成 Bridge 接线，见下一用例。
 
-缺失 Key 的“目录仍可加载”和“适配器发送前返回 `credentials_missing`”已经用本地测试验证。认证、限流、连接和 5xx 的**翻译逻辑**使用官方异常类型构造测试完成；真实断网、真实限流、半截 assistant 消息和账户权限仍要等网络手测，本记录不写成已通过。
+## 用例 13：完整两轮历史接线
+
+- 操作步骤：
+  1. 执行 `conda run --no-capture-output -n mycoder pytest tests/bridge/test_application.py tests/llm/test_anthropic_client.py -vv`。
+  2. 找到测试 `test_second_turn_sends_complete_first_turn_history`。
+- 预期结果：
+  1. 第二次 LLM 输入为 user1、assistant1、user2。
+  2. 内部历史在第二轮完成后为 user1、assistant1、user2、assistant2。
+  3. 第二轮 cumulative Token 为两轮之和。
+  4. Anthropic 假 SDK 收到完整三条消息和缓存参数。
+- 实际结果：2026-08-31 当前 Bridge + 适配器定向测试 16 项、完整 Python 44 项、Ruff、Mypy 17 个源码文件和真实 Electron 退出回归全部通过。
+- 结论：自动化通过；真实 DeepSeek 两轮语义待用户手测。
+
+## 用例 14：连续十轮与半截流中断
+
+- 操作步骤：
+  1. 执行 `conda run --no-capture-output -n mycoder pytest tests/bridge/test_application.py -vv`。
+  2. 找到 `test_ten_turns_keep_history_order_and_cumulative_usage`。
+  3. 找到 `test_partial_failure_is_kept_for_ui_but_filtered_from_api_history`。
+- 预期结果：
+  1. 十次输入时，传给模型的历史长度依次为 1、3、5……19。
+  2. 内部角色始终按 user/assistant 交替，轮次依次为 1—10。
+  3. 第十轮累计 Token 等于前十轮之和。
+  4. 模型已经返回一段文字再断开时，Bridge 先发 `stream_text` 再发 `error`。
+  5. 半截 assistant 以 failed 状态留在内部历史，但 `to_api_format()` 不把它发给下一轮模型。
+- 实际结果：2026-08-31，Bridge 定向测试 8 项通过。
+- 结论：通过；本测试完全离线，不读取项目真实 Key。
+
+## 用户最终手测：真实两轮链路
+
+这一步由用户启动，不属于自动化“通过”结论：
+
+1. 项目 `.env` 使用 `JIXUE_LLM_MODE=configured`、`JIXUE_MODEL_ID=flash` 和自己的 Key。
+2. 执行 `npm run dev`，等待状态显示 `deepseek-v4-flash / Bridge 在线`。
+3. 第一条发送：“请记住，我最喜欢冬天。”
+4. 等完整回复和 Markdown 渲染结束。
+5. 第二条发送：“我最喜欢什么季节？只回答季节。”
+6. 预期第二条回答“冬天”，状态栏 Token 累计增加，耗时停止增长，关闭窗口无错误弹窗。
+
+缺失 Key 的“目录仍可加载”和“适配器发送前返回 `credentials_missing`”已经用本地测试验证。认证、限流、连接和 5xx 的**翻译逻辑**使用官方异常类型构造测试完成；半截流在 Bridge 层也已自动验证。真实断网、真实限流和账户权限仍要等网络手测，本记录不写成已通过。
 
 ## 本章常见坑
 
@@ -193,19 +232,23 @@
 | 三个模型都显示 credentials_missing | 项目 `.env` 没有有效 `DEEPSEEK_API_KEY` | 检查文件位置、变量名和等号后的值是否非空 | 修正项目 `.env` 后完全重启 Electron；不要把 Key 写进 Git |
 | 适配器测试拿不到最终 Usage | 忘记 `await get_final_message()` | 运行 Mypy，检查返回值是不是协程 | 等待异步最终消息后再读取字段 |
 | Bridge 或领域层出现 `import anthropic` | SDK 边界被绕过 | 运行 `tests/test_architecture.py` | 把 SDK 类型和转换逻辑移回 `llm/adapters` |
-| 已传 cache_control 却没有命中数字 | 当前是短单轮且 Usage 未扩展缓存字段 | 检查消息历史与供应商 Usage | 完成 ConversationManager 后再做真实缓存验收 |
+| 已传 cache_control 却没有命中数字 | 历史仍太短或 Usage 未扩展缓存字段 | 检查消息历史与供应商 Usage | 长历史阶段再读取真实缓存字段验收 |
+| 第二轮忘记第一轮 | Bridge 进程被重启或历史接线错误 | 运行用例 13 并检查 Python 是否仍是同一进程 | 保持进程并检查 `to_api_format() → stream()` 链路 |
+| 两个请求历史顺序交叉 | 一整轮没有被同一把锁保护 | 检查 `_chat_lock` 范围 | 锁住加入 user 到保存 assistant 的完整过程 |
 | 一直显示 fake-jixue | 项目 `.env` 不存在、名字错误或模式仍为 fake | 只检查文件路径与 `JIXUE_LLM_MODE`，不要打印 Key | 修正项目根目录 `.env` 后完全重启 Electron |
 | configured 启动后立刻退出 | 模式、模型 ID 或目录结构无效 | 查看带 `[jixue-python]` 前缀的 stderr | 按中文错误修正变量或 YAML |
 | 改了 .env.example 但没有生效 | 程序只加载 `.env`，示例文件只是模板 | 确认当前目录存在名为 `.env` 的文件 | 复制 `.env.example` 为 `.env`，真实 Key 只写入复制文件 |
 | `.env` 与系统环境冲突 | 不清楚谁优先 | 阅读 `load_project_environment()` 的三步注释 | 当前实现固定使用项目 `.env` 的同名值 |
 | streaming 半截回复进入历史 | 没按状态过滤 | 运行 conversation 定向测试 | 只允许 complete 进入 API 历史 |
 | 转换后 UI 历史也少了 | 原地删除或修改内部列表 | 比较转换前后的 `manager.messages` | 返回新 `APIMessage`，不改内部消息 |
+| 到处找不到 Agent 类 | 当前只完成第一章聊天闭环 | 先读本章第 0 节和 `BridgeApplication._run_chat()` | 第三章才新增 Agent Loop，不要把 Bridge 误认成完整 Agent |
 
 ## 回归结论
 
-- 可以进入下一章：否；第一章尚未完成。
-- 可以进入第一章下一小步：是。
+- 第一章代码闭环：完成。
+- 可以进入下一章：可以；先等用户按上面的真实两轮链路手动观察。
 - Electron 构建与退出回归：通过，没有出现 “A JavaScript error occurred in the main process”。
 - D 步模型模式接线：项目 `.env` 自动加载、优先级、默认 fake、configured 缺 Key 和测试隔离均通过；真实 Key 请求待用户验收。
-- E 步消息模型与历史清洗：7 项定向测试通过，尚未接入真实请求。
-- 未解决问题：ConversationManager 接线、真实 DeepSeek 多轮验收、UI 三模型选择和十轮对话回归。
+- F 步完整历史接线：完整两轮、连续十轮和失败流隔离均通过，真实网络仍未自动调用。
+- 第一章保留的手动项：真实 DeepSeek 两轮；三个模型通过修改 `.env` 并重启切换。
+- 后续体验增强：界面内模型热切换和 Vision 图片输入，不阻塞第二章。

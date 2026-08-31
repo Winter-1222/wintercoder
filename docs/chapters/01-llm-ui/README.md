@@ -2,7 +2,38 @@
 
 > 适合读者：几乎零基础，已经知道第 0 章中的 Renderer、Preload、Main、Python Bridge 分别是什么。
 
-> 当前进度：本章已完成 FakeLLM 流式链路、独立模型配置加载、Anthropic 协议适配器和 Bridge 进程级模型模式接线。默认 fake 与 configured 缺 Key 已用真实 Python 子进程验证，但尚未使用真实 Key 发起 DeepSeek 请求；完整多轮历史和 UI 模型选择仍未实现。后文会一直明确区分“源码已写”“本地已测”“真实网络已验收”。
+> 当前进度：第一章代码闭环已经完成。Electron 能流式显示、完成后渲染 Markdown、显示实际模型/累计 Token/耗时；Python 能从项目 `.env` 选择 FakeLLM 或三个 DeepSeek 目录模型，并在每轮发送完整历史。自动化已覆盖十轮对话、半截流失败隔离和无错误退出。为了不替用户产生费用，真实 DeepSeek 两轮请求仍由用户手动验收；界面内热切换模型是后续体验增强，不是第一章聊天闭环的阻塞项。
+
+> **第一次阅读请不要继续往下翻。** 先打开 [`MESSAGE_FLOW.md`](MESSAGE_FLOW.md)，它只用核心代码和伪代码串起一条消息；本文保留详细解释、设计原因和排错资料。
+
+## 0. 先回答：Agent 到底在哪里
+
+**当前仓库还没有一个叫 `Agent` 或 `AgentLoop` 的类。** 这不是文件丢了，而是开发顺序如此：
+
+```text
+第 1 章（现在完成）
+聊天 UI + LLM 客户端 + 对话历史
+  ↓
+第 2 章（下一章）
+让模型可以请求并执行工具
+  ↓
+第 3 章
+Agent Loop：模型 → 工具 → 结果 → 再问模型，直到完成
+```
+
+如果你现在只想找“最像 Agent 核心的地方”，请打开
+`src/jixue/bridge/application.py`。其中 `BridgeApplication._run_chat()` 负责接收一轮聊天、
+准备完整历史、调用模型并把事件交给 UI。它是**第一章的聊天应用核心**，但还不是会自动连续
+调用工具的 Agent Loop。
+
+第一章只需要先认住六个位置：
+
+1. `App.tsx/sendMessage()`：用户点击发送。
+2. `bridge-process.ts/sendChat()`：Electron 把消息写给 Python。
+3. `server.py/_dispatch()`：Python 收到命令。
+4. `application.py/_run_chat()`：一轮聊天的总指挥。
+5. `conversation.py/to_api_format()`：把历史洗成模型能接收的格式。
+6. `LLMClient.stream()`：FakeLLM 或 DeepSeek 开始返回流。
 
 ## 1. 本章最终要回答的问题
 
@@ -30,7 +61,8 @@
   → Python 子进程 stdin
   → BridgeServer
   → BridgeApplication
-  → FakeLLM
+  → ConversationManager 准备完整历史
+  → LLMClient（FakeLLM 或 DeepSeek 适配器）
   → Python stdout
   → Electron Main
   → Preload
@@ -51,8 +83,15 @@
 8. 解释为什么 SDK 异常不能直接交给 Bridge 或 React。
 9. 解释 `JIXUE_LLM_MODE` 怎样决定 Python 进程使用 FakeLLM 还是真实适配器。
 10. 解释为什么 configured 缺 Key 可以完成握手，却在发送时返回错误。
+11. 解释为什么第一章没有 `AgentLoop`，以及它会在哪一章出现。
 
 ## 2. 推荐阅读顺序
+
+### 零基础最短路线：先只读 6 个文件
+
+按第 0 节列出的六个位置阅读。每个文件第一遍只找对应函数，不要试图一次理解所有
+TypeScript、Electron 和 Python 语法。能用手指把“发送 → Python → 模型 → 返回”指一遍，
+再进入下面的完整路线。
 
 ### 第一轮：只理解链路，不看实现细节
 
@@ -82,7 +121,7 @@
 | 12 | 回到 `App.tsx` | `handleBridgeEvent()`、`MessageView` | 文本怎样显示并最终变成 Markdown？ |
 | 13 | 回到 `state.ts` | `text_received`、`request_completed` | 每个事件怎样修改 UI 状态？ |
 
-默认 Electron 聊天仍走 FakeLLM；configured 模式已经把配置与真实适配器插入同一条 Bridge 链路。第二轮读完 FakeLLM 消息后，再按这个顺序阅读启动选择：
+Electron 最终走 FakeLLM 还是 DeepSeek 由项目 `.env` 决定；两种模式共用同一条 Bridge 链路。第二轮读完 FakeLLM 消息后，再按这个顺序阅读启动选择：
 
 | 顺序 | 文件 | 重点位置 | 只回答什么问题 |
 | --- | --- | --- | --- |
@@ -434,7 +473,7 @@ this.child.stdin.write(`${JSON.stringify(envelope)}\n`, 'utf8')
 
 此时对象变成一行文本，经由 Python 进程的 stdin 进入后端。
 
-## 7. 第三段：Python 调用 FakeLLM 并产生事件
+## 7. 第三段：Python 准备历史、调用 LLM 并产生事件
 
 ### 第 9 步：`BridgeServer` 读取一整行
 
@@ -474,9 +513,12 @@ if command.type == "chat.send":
 
 `yield` 可以先简单理解为“产生一个结果，但函数还没结束，以后还会继续产生更多结果”。这正适合流式事件。
 
-### 第 12 步：检查文本并准备元数据
+### 第 12 步：检查文本、加锁并准备模型历史
 
-`_handle_chat()` 先确认 `payload.text` 是非空字符串，然后创建：
+`_handle_chat()` 先确认 `payload.text` 是非空字符串，再进入 `asyncio.Lock`。这把锁会
+覆盖完整一轮，避免两次发送同时修改同一份历史。
+
+然后 `_run_chat()` 创建：
 
 - `sequence = 0`：第一条返回事件的序号。
 - `message_id = msg_随机值`：这一条 assistant 消息的 ID。
@@ -490,6 +532,22 @@ if command.type == "chat.send":
 | `message_id` | 本轮产生的 assistant 消息 | 所有文本块共享同一个值 |
 | `sequence` | 同一请求中事件的先后顺序 | 每发一个事件加 1 |
 
+接着，当前用户消息进入 `ConversationManager`：
+
+```python
+self._conversation.add_user(text)
+api_messages = self._conversation.to_api_format()
+```
+
+第一次发送“你好”时，`api_messages` 只有一条：
+
+```python
+[APIMessage(role="user", content="你好")]
+```
+
+第二轮时，这里会是 `user1 → assistant1 → user2`。只有状态为 complete 的干净消息会
+进入这个列表；ID、时间、状态和 Token 等 UI 元数据仍留在内部消息中。
+
 ### 第 13 步：通过自己的接口调用模型
 
 文件：`src/jixue/llm/base.py`
@@ -497,13 +555,16 @@ if command.type == "chat.send":
 领域层规定所有模型客户端都要提供：
 
 ```python
-def stream(self, prompt: str) -> AsyncIterator[LLMStreamEvent]
+def stream(
+    self,
+    messages: Sequence[APIMessage],
+) -> AsyncIterator[LLMStreamEvent]
 ```
 
-`BridgeApplication` 只调用这个接口：
+`BridgeApplication` 只把刚得到的干净历史交给这个接口：
 
 ```python
-async for llm_event in self._llm.stream(text):
+async for llm_event in self._llm.stream(api_messages):
 ```
 
 它不知道 `_llm` 是 FakeLLM、DeepSeek 还是别的供应商。这就是“暴露领域语义，隐藏实现细节”。
@@ -512,7 +573,8 @@ async for llm_event in self._llm.stream(text):
 
 文件：`src/jixue/llm/fake.py`
 
-`FakeLLMClient.stream("你好")` 先构造完整文本：
+`FakeLLMClient.stream([APIMessage(role="user", content="你好")])` 先读取最后一条 user，
+再构造完整文本：
 
 ```markdown
 ## 霁雪已经醒来
@@ -687,10 +749,11 @@ message.status === 'streaming'
 
 ### 第 23 步：产生 usage
 
-FakeLLM 用字符数估算：
+FakeLLM 用**整段 API 历史**的字符数估算输入 Token，用回复字符数估算输出 Token：
 
 ```python
-input_tokens = max(1, (len(prompt) + 3) // 4)
+history_characters = sum(len(message.content) for message in messages)
+input_tokens = max(1, (history_characters + 3) // 4)
 output_tokens = max(1, (len(response) + 3) // 4)
 ```
 
@@ -814,12 +877,12 @@ assistant.content += "霁雪"
 - Token 是字符数估算，不是供应商准确用量。
 - `session_id` 目前固定为 `session_dev`。
 - `model_id` 目前固定为 `fake`。
-- `ConversationManager` 已能生成干净历史，但尚未接入 Bridge/LLM，所以每次仍只发送当前用户文本。
+- `ConversationManager` 已接入 Bridge/LLM，每次都会发送当前内存会话的完整干净历史。
 - 左侧“新任务”目前只是界面占位，没有创建会话功能。
 - 还没有用用户自己的 Key 做真实网络手测，也没有观察到真实 Prompt Cache 命中。
 - 模型目前在进程启动前通过环境变量选择，UI 里还没有 Flash/Pro/Vision Exp 下拉框。
 
-因此现在连续发送两条消息，只证明“可以连续请求”，不代表第二次请求知道第一次聊过什么。消息管理器已经完成；下一小步要把它接入 Bridge 和 LLM 请求。
+因此现在连续发送两条消息时，第二次模型调用会收到第一轮 user、assistant 和本轮 user。历史目前只存在于当前 Python 进程内，关闭应用后还不会恢复。
 
 ## 12. 模型配置是怎么跑起来的
 
@@ -1596,7 +1659,7 @@ conda run --no-capture-output -n mycoder python -m pytest tests/llm/test_anthrop
 6. **为什么 `sequence` 不一直是 0？** 它表示同一请求中事件先后顺序，每发一个事件递增。
 7. **为什么流式时不用 ReactMarkdown？** Markdown 可能只到半截，频繁解析会闪烁或产生错误结构。
 8. **什么时候开始 Markdown 渲染？** 收到 `turn_complete`，reducer 把消息状态设为 complete 后。
-9. **当前第二条请求知道第一条消息吗？** 还不知道；ConversationManager 已实现，但尚未接入 Bridge/LLM 请求。
+9. **当前第二条请求知道第一条消息吗？** 知道；Bridge 会把第一轮 user/assistant 和第二轮 user 一起交给 LLMClient。
 10. **换成 DeepSeek 后 React 是否应该重写？** 不应该；供应商差异应被 LLM 适配器隐藏。
 11. **`LLMConfig` 为什么不包含 label 和 context_window？** 这些是应用模型目录的展示与调度元数据，不是创建供应商客户端必需的四个字段。
 12. **没有 `DEEPSEEK_API_KEY` 时，目录为什么仍能加载？** 缺凭据是可补救的运行状态，用户仍应能启动应用并使用 FakeLLM。
@@ -1624,8 +1687,16 @@ conda run --no-capture-output -n mycoder python -m pytest tests/llm/test_anthrop
 34. **相邻两条 user 消息怎样处理？** `to_api_format()` 用两个换行合成一条 user 消息，保留段落边界。
 35. **`to_api_format()` 会修改原消息列表吗？** 不会；它返回一份新列表，内部历史仍保留原始消息与状态。
 36. **为什么拒绝 assistant 开头的历史？** 正常对话需要先有用户请求；拒绝异常历史比让供应商返回模糊坏请求更容易排查。
+37. **谁把当前 user 放进历史？** `BridgeApplication._run_chat()` 在调用 LLM 前执行 `add_user()`。
+38. **流式 assistant 什么时候写入完整历史？** 收到 COMPLETE 并拼完所有文本片段后。
+39. **第二轮传给模型的角色顺序是什么？** user1、assistant1、user2。
+40. **为什么聊天需要 `asyncio.Lock`？** 防止两个同时到达的请求交叉加入和保存消息，破坏轮次顺序。
+41. **累计 Token 怎样计算？** 已完成历史里的 Usage 加上当前轮 USAGE，生成新的 cumulative。
+42. **Anthropic `MessageParam` 可以离开适配器吗？** 不可以；上层只认识霁雪的 `APIMessage`。
+43. **为什么现在搜不到 `AgentLoop`？** 第一章只建立聊天、LLM 和历史底座；会自动“模型 → 工具 → 模型”的循环在第三章才实现。
+44. **第一章里最像总指挥的是谁？** `BridgeApplication._run_chat()`；它只负责一轮聊天，不会自动执行工具。
 
-如果第 1—8 题能用自己的话回答，你已经理解当前消息链路；第 9、10 题帮助区分“当前能力”和“未来设计”；第 11—15 题用于复盘模型目录；第 16—23 题用于复盘客户端工厂、流式适配器、缓存和错误边界；第 24—31 题用于复盘 `.env`、Bridge 启动选择和安全边界；第 32—36 题用于复盘两层消息与历史清洗。
+如果第 1—8 题能用自己的话回答，你已经理解当前消息链路；第 9、10、43、44 题帮助区分“聊天核心”和“未来 Agent”；第 11—15 题用于复盘模型目录；第 16—23 题用于复盘客户端工厂、流式适配器、缓存和错误边界；第 24—31 题用于复盘 `.env`、Bridge 启动选择和安全边界；第 32—36 题用于复盘两层消息与历史清洗；第 37—42 题用于复盘真实多轮接线。
 
 ## 18. E 步：两层消息模型与 ConversationManager
 
@@ -1713,9 +1784,8 @@ user: 帮我看 state.ts
 
 ### 18.6 当前边界
 
-本步只证明“历史能被正确管理和清洗”。`BridgeApplication` 还没有持有
-`ConversationManager`，`LLMClient.stream()` 仍接收一个 `prompt: str`。所以现在打开
-Electron 连续问两次，第二问仍不会携带第一轮；下一小步才修改这条实际请求链路。
+E 步完成时只证明“历史能被正确管理和清洗”，当时尚未接入真实请求。现在 F 步已经
+完成接线，继续阅读下一节即可跟踪一条真正的第二轮消息。
 
 ### 18.7 手动运行本步测试
 
@@ -1734,13 +1804,96 @@ Electron，也不访问 DeepSeek。
 - 把 streaming 半截内容发给模型：下一轮会把不完整回答当作既成事实。
 - 错误消息包含用户正文：异常日志可能泄露对话，因此校验错误只描述规则。
 
-## 19. 本章下一小步
+## 19. F 步：完整历史真正进入模型请求
 
-接下来按这个顺序继续，不进入工具系统：
+### 19.1 推荐阅读顺序
 
-1. 把 `ConversationManager` 注入 Bridge，把 `LLMClient.stream()` 输入升级为完整 API 历史。
-2. 完成连续两轮自动化测试，证明第二次请求实际携带第一轮。
-3. 由用户用 DeepSeek Anthropic 端点完成一次真实多轮流式手测。
-4. 加入 Flash、Pro、Vision Exp UI 模型选择，不再依赖重启进程切换。
+1. `llm/base.py`：先看 `LLMClient.stream(messages)` 的新合同。
+2. `bridge/application.py`：读 `_handle_chat()` 的锁，再读 `_run_chat()`。
+3. `llm/fake.py`：看离线模型怎样从历史取最后一条用户消息。
+4. `llm/adapters/anthropic_client.py`：只关注 `APIMessage → MessageParam` 转换。
+5. `tests/bridge/test_application.py`：先找第二轮历史测试，再找十轮与半截失败测试。
 
-每完成一步，本章都会增加该能力自己的推荐阅读顺序、端到端链路、输入输出示例、常见错误和手动验证方法。
+### 19.2 第二条消息的完整运行链路
+
+```text
+第二次 chat.send("我叫什么")
+  ↓ BridgeApplication._handle_chat()
+asyncio.Lock 保证本轮不与其他聊天交叉
+  ↓ _run_chat()
+ConversationManager.add_user("我叫什么")
+  ↓ to_api_format()
+[
+  user: "我叫小雪",
+  assistant: "第 1 轮回答",
+  user: "我叫什么"
+]
+  ↓ LLMClient.stream(完整历史)
+  ├─ FakeLLM：读取最后一条 user，离线流式回复
+  └─ Anthropic 适配器：转为官方 MessageParam 后调用 messages.stream()
+  ↓ 每个 TEXT 既发给 UI，也追加到 assistant_chunks
+  ↓ USAGE = 本轮 Token；cumulative = 旧历史 + 本轮
+  ↓ COMPLETE
+ConversationManager.add_assistant(完整拼接文本, usage)
+  ↓
+历史准备好供第三轮使用
+```
+
+### 19.3 为什么完成后才保存 assistant
+
+流式文本可能随时断开。若每个片段都立即当成 complete 写入历史，下一轮可能读到半句话。
+因此本轮先把片段放进临时 `assistant_chunks`；只有 COMPLETE 到达才以 complete 状态保存。
+若中途报错，已经显示过的部分会以 failed 状态保留，但 `to_api_format()` 会过滤它。
+
+### 19.4 为什么需要聊天锁
+
+BridgeServer 可以并发分发协议命令。没有锁时，请求 A 和 B 可能按
+`userA → userB → assistantA → assistantB` 写入，语义已经错乱。当前单会话实现用
+`asyncio.Lock` 把一整轮包住，顺序固定为 `userA → assistantA → userB → assistantB`。
+
+### 19.5 Anthropic 适配器边界
+
+上层传入 `Sequence[APIMessage]`。适配器内部才创建官方 `list[MessageParam]`，继续使用
+`client.messages.stream()`、顶层 `cache_control` 和 `await get_final_message()`。
+这既满足无状态 API 必须携带完整历史，也保持 Prompt Cache 的稳定前缀机会。
+
+### 19.6 自动测试证明了什么
+
+```powershell
+conda run --no-capture-output -n mycoder pytest tests/bridge/test_application.py tests/llm/test_anthropic_client.py -vv
+```
+
+关键断言不是“函数被调用两次”，而是第二次输入精确等于
+`user1 → assistant1 → user2`；同时 Anthropic 假 SDK 收到三条官方消息参数，累计 Token
+从第一轮 10/2 加到第二轮 30/6。十轮测试继续检查历史长度按 1、3、5……19 增长；
+半截失败测试确认 failed 回复不会进入下一轮 API。测试不读取真实 Key，也不访问网络。
+
+### 19.7 当前边界
+
+- 一份 `BridgeApplication` 只有一个内存会话，`session_id` 路由尚未实现。
+- 关闭应用后历史消失；第八章才做 JSONL 会话持久化。
+- 本章仍只有文本块；工具消息从第二章开始。
+- 真实 DeepSeek 多轮效果需要用户手动发送两条短消息验收。
+
+## 20. 本章验收结论
+
+### 当前已经真实实现并由本地自动化验证
+
+- Electron 标题栏、对话区、状态区和输入框。
+- 流式阶段显示纯文本，完成后一次 Markdown 渲染。
+- 实际模型名、本轮/累计 Token 和耗时事件。
+- 项目 `.env` 装配 FakeLLM 或三个 DeepSeek 目录模型，默认目录模型为 Flash。
+- 内部消息与 API 消息分层，完整多轮历史清洗和发送。
+- 十轮历史顺序、失败半截回复隔离、Electron 正常退出。
+
+### 需要用户手动验证
+
+- 使用自己的 Key 发起真实 DeepSeek 两轮短对话，因为这会联网并可能产生费用。
+- 分别修改 `JIXUE_MODEL_ID=flash/pro/vision_exp` 后重启，观察状态栏的实际模型。
+
+### 明确放到以后
+
+- 界面内不重启热切换模型：属于 UI 体验增强。
+- 图片输入：当前 Vision Exp 仍只接收文本。
+- 工具系统：第二章。
+- 真正的 Agent Loop：第三章。

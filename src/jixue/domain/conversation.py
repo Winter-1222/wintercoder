@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from jixue.domain.messages import Message, MessageStatus, Role
+from jixue.domain.messages import Message, MessageStatus, Role, Usage
 
 
 class ConversationError(ValueError):
@@ -45,6 +45,15 @@ class ConversationManager:
 
         return tuple(self._messages)
 
+    @property
+    def total_usage(self) -> Usage:
+        """累计内部历史里的 Token，用于状态栏显示会话总量。"""
+
+        return Usage(
+            input_tokens=sum(message.usage.input_tokens for message in self._messages),
+            output_tokens=sum(message.usage.output_tokens for message in self._messages),
+        )
+
     def add(self, message: Message) -> None:
         """按时间顺序加入一条内部消息，并拒绝重复 ID。
 
@@ -68,10 +77,16 @@ class ConversationManager:
         content: str,
         *,
         status: MessageStatus = MessageStatus.COMPLETE,
+        usage: Usage | None = None,
     ) -> Message:
-        """创建助手消息；流式阶段可以显式传入 `STREAMING`。"""
+        """创建助手消息；可记录流式状态和本轮模型返回的 Token。"""
 
-        message = Message(role="assistant", content=content, status=status)
+        message = Message(
+            role="assistant",
+            content=content,
+            status=status,
+            usage=usage or Usage(),
+        )
         self.add(message)
         return message
 

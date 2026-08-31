@@ -493,8 +493,109 @@ Electron 把 Python cwd 固定为项目根目录
 - D 步已提交：`4ec2c1b feat(llm): 接通项目配置与动态模型`。
 - E 步按约定保持未提交，等待用户手测。
 
-## 当前下一小步
+## 2026-08-31：F 步完整多轮历史接线
 
-1. 把 ConversationManager 接入 Bridge 与 LLMClient，真正发送完整历史。
-2. 自动验证第二轮请求含第一轮 user/assistant。
-3. 再进行真实 DeepSeek 多轮手测和 UI 模型选择。
+### 实际改动
+
+- `LLMClient.stream()` 从单个字符串升级为 `Sequence[APIMessage]`。
+- FakeLLM 按完整历史估算输入 Token，并用最后一条 user 生成预览。
+- Anthropic 适配器在内部把全部领域消息转换成官方 `MessageParam`，保留流式 helper 与顶层缓存。
+- BridgeApplication 持有 ConversationManager；每轮加入 user、发送历史、拼接 assistant、保存用量。
+- 增加聊天锁，防止并发请求交叉污染单会话历史。
+- 失败后的半截 assistant 标记为 failed，保留事实但不进入下一轮 API。
+- cumulative Token 改为历史累计加本轮，不再等于单轮值。
+
+### `Codex-api` 技能怎样影响实现
+
+- 继续使用官方 Anthropic Python SDK，没有改成 raw HTTP 或兼容接口。
+- 无状态 Messages API 每轮接收完整历史。
+- 流式完成仍使用 `await stream.get_final_message()`，不会额外发第二次请求。
+- 保留 `cache_control={"type": "ephemeral"}`；真实缓存命中要以后读取 usage 证据。
+
+### 测试与问题
+
+- 新增第二轮历史断言：`user1 → assistant1 → user2`。
+- Anthropic 假 SDK 断言三条消息都被转换，SDK 类型仍不离开适配器。
+- 首次定向测试发现 `_remember_failed_assistant` 误保留 `@staticmethod`，导致缺少 self。
+- 删除错误装饰器后，定向测试 21 项与 Mypy 8 个相关文件通过。
+- 完整 Python 42 项、Ruff、Mypy 17 个源码文件通过。
+- 真实 Electron 构建、FakeLLM 消息链路和无错误退出回归通过。
+
+### Git
+
+- E 步已提交：`9ae56a6 feat(chat): 增加对话消息清洗`。
+- F 步保持未提交，等待用户启动和手测。
+
+## 2026-08-31：G 步第一章收尾验收
+
+### 为什么不新增 Agent 类
+
+第一章的任务是建立“用户消息 → LLM → 流式回复”的聊天底座。真正的 Agent 至少还需要
+工具请求、工具执行结果和自动继续循环；这些分别属于第二、三章。此时创建一个空的
+`Agent` 外壳只会让初学者误以为 Agent 已经存在，因此本步只收口验收和阅读入口。
+
+当前最接近一轮聊天总指挥的是 `BridgeApplication._run_chat()`：
+
+```text
+chat.send
+  → ConversationManager 准备完整历史
+  → LLMClient.stream()
+  → stream_text / usage / turn_complete
+```
+
+它只执行一次模型调用，不会执行工具，也不会自动再问模型，所以文档明确称它为
+“聊天应用核心”，不称为 Agent Loop。
+
+### 新增验收
+
+- 连续十轮检查历史长度 1、3、5……19，角色严格 user/assistant 交替。
+- 检查轮次 1—10 和累计 Token 单调累加。
+- 模拟先输出半截文本再连接失败，确认 UI 能收到半截文本与错误。
+- 失败 assistant 以 failed 状态保留供复盘，但被 `to_api_format()` 过滤。
+- 测试文件继续只在本地存在，由 `.gitignore` 排除。
+
+### 本轮验证结果
+
+- `tests/bridge/test_application.py`：8 项通过。
+- Bridge + Anthropic 适配器定向组合：16 项通过。
+- 完整 Python：44 项通过。
+- Ruff：通过。
+- Mypy：17 个源码文件通过。
+- 前端 Vitest：2 项通过；TypeScript 类型检查通过。
+- 真实 Electron 构建、开窗、FakeLLM 消息和关闭回归通过；没有主进程错误弹窗。
+- 所有自动化均使用 FakeLLM 或假 SDK，不调用用户真实 DeepSeek Key。
+
+### 教学收口
+
+- 章节首页新增“Agent 到底在哪里”，先消除目录定位误解。
+- 增加六文件最短阅读路线，再保留完整的进程级路线。
+- 更新第一章现状、验收边界、自测题与答案。
+- 手测记录加入真实两轮最短脚本，以及十轮和半截流的自动化证据。
+- 项目结构表同步说明测试职责。
+
+### 第一章之后
+
+- 用户可用自己的 Key 完成一次真实两轮短对话；自动化不会替用户产生费用。
+- 第二章开始实现工具接口与注册中心。
+- 第三章才创建真正的 Agent Loop。
+
+## 2026-08-31：新增最短消息链路文档
+
+### 用户反馈
+
+第一章 `README.md` 虽然信息完整，但长度过大，不适合作为第一次理解代码的入口。
+
+### 本次调整
+
+- 新增 `MESSAGE_FLOW.md`，只讲“一条消息怎样从 UI 到 LLM 再返回 UI”。
+- 每一步只保留文件位置、输入、核心代码或伪代码、输出。
+- 单独说明 `chatReducer`、`ConversationManager`、`LLMClient` 和流式事件各自位于链路哪里。
+- 用第二轮的 `user1 → assistant1 → user2` 解释多轮历史。
+- 明确当前没有 Agent Loop，避免把 `BridgeApplication` 误认为完整 Agent。
+- 在长 README 开头增加醒目入口，第一次阅读先去最短文档。
+- 项目结构文档同步记录新文件职责。
+
+### 验证
+
+本次只修改 Markdown，没有改变源码行为；检查 Markdown 链接、目录记录和 Git 差异，
+不重复运行上一轮已经通过的完整代码回归。
