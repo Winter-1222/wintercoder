@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator, Callable, Sequence
+from typing import cast
 
 import anthropic
-from anthropic.types import MessageParam
+from anthropic.types import MessageParam, ToolParam
 
 from jixue.domain.conversation import APIMessage, Usage
-from jixue.llm.base import LLMClientError, LLMEventType, LLMStreamEvent
+from jixue.llm.base import (
+    LLMClientError,
+    LLMEventType,
+    LLMStreamEvent,
+    ToolDefinition,
+)
 from jixue.llm.config import LLMConfig
 
 type AnthropicClientFactory = Callable[..., anthropic.AsyncAnthropic]
@@ -36,21 +43,42 @@ class AnthropicLLMClient:
     async def stream(
         self,
         messages: Sequence[APIMessage],
+        tools: Sequence[ToolDefinition] = (),
     ) -> AsyncIterator[LLMStreamEvent]:
         sdk_messages: list[MessageParam] = [
             {"role": message.role, "content": message.content}
             for message in messages
         ]
+        sdk_tools = cast(list[ToolParam], [dict(tool) for tool in tools])
+        tool_buffers: dict[int, tuple[str, str, list[str]]] = {}
         try:
             async with self._get_client().messages.stream(
                 model=self._config.model,
                 max_tokens=self._max_tokens,
                 messages=sdk_messages,
+                tools=sdk_tools,
                 cache_control={"type": "ephemeral"},
             ) as stream:
-                async for text in stream.text_stream:
-                    if text:
-                        yield LLMStreamEvent(LLMEventType.TEXT, text=text)
+                async for event in stream:
+                    if event.type == "content_block_start":
+                        block = event.content_block
+                        if block.type == "tool_use":
+                            tool_buffers[event.index] = (block.id, block.name, [])
+                    elif event.type == "content_block_delta":
+                        if event.delta.type == "text_delta" and event.delta.text:
+                            yield LLMStreamEvent(LLMEventType.TEXT, text=event.delta.text)
+                        elif event.delta.type == "input_json_delta":
+                            buffer = tool_buffers.get(event.index)
+                            if buffer is not None:
+                                buffer[2].append(event.delta.partial_json)
+                    elif event.type == "content_block_stop":
+                        buffer = tool_buffers.pop(event.index, None)
+                        if buffer is not None:
+                            yield _tool_use_event(buffer)
+
+                # 流若在 JSON 结束块之前中断，也生成错误事件，不能丢失整个请求。
+                for buffer in tool_buffers.values():
+                    yield _tool_use_event(buffer, interrupted=True)
                 final = await stream.get_final_message()
         except anthropic.APIError as error:
             raise _translate_error(error) from error
@@ -77,6 +105,34 @@ class AnthropicLLMClient:
                 max_retries=2,
             )
         return self._client
+
+
+def _tool_use_event(
+    buffer: tuple[str, str, list[str]],
+    *,
+    interrupted: bool = False,
+) -> LLMStreamEvent:
+    """拼接 JSON 碎片；格式错误作为事件返回，不让流崩溃。"""
+
+    tool_use_id, name, fragments = buffer
+    raw_input = "".join(fragments) or "{}"
+    error = "工具参数流在结束前中断" if interrupted else None
+    try:
+        value: object = json.loads(raw_input)
+    except json.JSONDecodeError:
+        value = {}
+        error = error or "工具参数不是有效 JSON"
+    if not isinstance(value, dict):
+        value = {}
+        error = error or "工具参数必须是 JSON 对象"
+
+    return LLMStreamEvent(
+        LLMEventType.TOOL_USE,
+        tool_use_id=tool_use_id,
+        tool_name=name,
+        tool_input={str(key): item for key, item in value.items()},
+        tool_error=error,
+    )
 
 
 def _translate_error(error: anthropic.APIError) -> LLMClientError:

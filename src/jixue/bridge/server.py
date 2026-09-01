@@ -10,6 +10,7 @@ from typing import TextIO
 from jixue.bridge.application import BridgeApplication
 from jixue.bridge.bootstrap import BridgeBootstrapError, create_runtime_llm
 from jixue.domain.events import Envelope, ProtocolError
+from jixue.tools import ToolRegistry, create_read_file_tool
 
 MAX_LINE_BYTES = 1024 * 1024
 
@@ -85,7 +86,14 @@ def main() -> None:
         sys.stderr.write(f"Bridge 启动配置错误：{error}\n")
         raise SystemExit(2) from error
 
-    server = BridgeServer(BridgeApplication(llm), sys.stdin, sys.stdout, sys.stderr)
+    tools = ToolRegistry()
+    tools.register(create_read_file_tool())
+    server = BridgeServer(
+        BridgeApplication(llm, tools=tools),
+        sys.stdin,
+        sys.stdout,
+        sys.stderr,
+    )
     asyncio.run(server.run())
 
 

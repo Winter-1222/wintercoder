@@ -168,6 +168,22 @@ button, textarea { font: inherit; }
 .message-body code { padding: 2px 5px; border-radius: 4px; background: #f0f0ed; }
 .message-body pre code { display: block; padding: 12px; overflow: auto; }
 
+.tool-message {
+  display: grid;
+  grid-template-columns: 72px 1fr;
+  gap: 12px;
+  margin: -12px 0 26px 40px;
+  padding: 12px 14px;
+  border: 1px solid #dde3e4;
+  border-radius: 10px;
+  background: #f5f7f7;
+}
+
+.tool-message > span { color: #718087; font-size: 12px; }
+.tool-message strong { font-size: 13px; }
+.tool-message pre { margin: 6px 0 0; overflow: auto; color: #596367; font-size: 12px; }
+.tool-message[data-status='failed'] { border-color: #e2c4bf; background: #fff6f4; }
+
 .cursor {
   display: inline-block;
   width: 7px;

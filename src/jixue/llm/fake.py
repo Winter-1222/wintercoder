@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import AsyncIterator, Sequence
 
 from jixue.domain.conversation import APIMessage, Usage
-from jixue.llm.base import LLMEventType, LLMStreamEvent
+from jixue.llm.base import LLMEventType, LLMStreamEvent, ToolDefinition
 
 
 class FakeLLMClient:
@@ -26,6 +26,7 @@ class FakeLLMClient:
     async def stream(
         self,
         messages: Sequence[APIMessage],
+        tools: Sequence[ToolDefinition] = (),
     ) -> AsyncIterator[LLMStreamEvent]:
         """读取完整历史，并把固定 Markdown 按不规则边界拆成文本增量。"""
 

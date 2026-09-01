@@ -5,9 +5,10 @@ import type { BridgeState } from '../../shared/protocol'
 export interface UiMessage {
   id: string
   requestId: string
-  role: 'user' | 'assistant'
+  role: 'user' | 'assistant' | 'tool'
   content: string
   status: 'streaming' | 'complete' | 'failed'
+  name?: string
 }
 
 export interface ChatState {
@@ -25,6 +26,14 @@ export type ChatAction =
   | { type: 'model_changed'; model: string }
   | { type: 'request_started'; requestId: string; text: string; startedAt: number }
   | { type: 'text_received'; requestId: string; messageId: string; text: string }
+  | {
+      type: 'tool_received'
+      requestId: string
+      toolUseId: string
+      name: string
+      input: string
+      error: string
+    }
   | { type: 'usage_received'; inputTokens: number; outputTokens: number }
   | { type: 'request_completed'; requestId: string; durationMs: number; model: string }
   | { type: 'request_failed'; requestId: string; message: string }
@@ -92,6 +101,22 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           content: message.content + action.text
         }))
       }
+    case 'tool_received':
+      // 工具请求也是对话时间线的一部分；input 已转成便于阅读的 JSON 字符串。
+      return {
+        ...state,
+        messages: [
+          ...state.messages,
+          {
+            id: action.toolUseId,
+            requestId: action.requestId,
+            role: 'tool',
+            name: action.name,
+            content: action.error || action.input,
+            status: action.error ? 'failed' : 'complete'
+          }
+        ]
+      }
     case 'usage_received':
       // 后端给的是整个会话累计值，所以这里直接替换而不是再次相加。
       return {
@@ -109,7 +134,12 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         messages: updateAssistant(state.messages, action.requestId, (message) => ({
           ...message,
           status: 'complete'
-        }))
+        })).filter(
+          (message) =>
+            message.requestId !== action.requestId ||
+            message.role !== 'assistant' ||
+            message.content.length > 0
+        )
       }
     case 'request_failed':
       // 请求失败也保留已经收到的文字；若一段都没有，才显示错误消息。

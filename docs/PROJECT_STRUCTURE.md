@@ -27,9 +27,9 @@ myAgent/
 | `src/jixue/llm/base.py` | 霁雪自己的 LLM 接口和流式事件 |
 | `src/jixue/llm/fake.py` | 离线模拟 LLM，方便免费测试全链路 |
 | `src/jixue/llm/config.py` | 从 `models.yaml` 和环境中生成四字段配置 |
-| `src/jixue/llm/adapters/anthropic_client.py` | 唯一接触 Anthropic SDK 的适配器 |
+| `src/jixue/llm/adapters/anthropic_client.py` | 唯一接触 Anthropic SDK，并解析文本与 tool_use 流 |
 | `src/jixue/bridge/bootstrap.py` | 读取项目根目录 `.env`，选择 Fake 或真实 LLM |
-| `src/jixue/bridge/application.py` | 一轮聊天的业务核心：历史 → LLM → UI 事件 |
+| `src/jixue/bridge/application.py` | 一轮聊天核心：历史、工具定义 → LLM → UI 事件 |
 | `src/jixue/bridge/server.py` | 从 stdin 收 JSON，从 stdout 发 JSON |
 | `src/jixue/bridge/__main__.py` | 让 `python -m jixue.bridge` 能启动 |
 | `src/jixue/tools/base.py` | 工具合同、ToolResult 和通用 BaseTool |
@@ -48,7 +48,7 @@ myAgent/
 | `apps/desktop/src/preload/index.ts` | 只向网页暴露安全的聊天接口 |
 | `apps/desktop/src/shared/protocol.ts` | 前后端共用的事件类型 |
 | `apps/desktop/src/renderer/src/App.tsx` | 聊天页面和事件接收 |
-| `apps/desktop/src/renderer/src/state.ts` | reducer：根据事件更新消息、状态和用量 |
+| `apps/desktop/src/renderer/src/state.ts` | reducer：更新消息、工具卡片、状态和用量 |
 | `apps/desktop/src/renderer/src/styles.css` | Codex 风格的界面样式 |
 | `apps/desktop/src/renderer/src/main.tsx` | React 页面入口 |
 

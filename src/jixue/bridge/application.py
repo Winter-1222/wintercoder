@@ -17,6 +17,7 @@ from jixue.domain.conversation import (
 )
 from jixue.domain.events import Envelope
 from jixue.llm.base import LLMClient, LLMClientError, LLMEventType
+from jixue.tools import ToolRegistry
 
 
 class BridgeApplication:
@@ -26,9 +27,11 @@ class BridgeApplication:
         self,
         llm: LLMClient,
         conversation: ConversationManager | None = None,
+        tools: ToolRegistry | None = None,
     ) -> None:
         self._llm = llm
         self._conversation = conversation or ConversationManager()
+        self._tools = tools or ToolRegistry()
         self._chat_lock = asyncio.Lock()
 
     @property
@@ -45,7 +48,7 @@ class BridgeApplication:
                     "protocol_version": command.version,
                     "backend_version": __version__,
                     "model": self._llm.model_name,
-                    "capabilities": ["stream_text", "usage"],
+                    "capabilities": ["stream_text", "tool_use", "usage"],
                 },
             )
         elif command.type == "chat.send":
@@ -90,7 +93,10 @@ class BridgeApplication:
                 return
 
             try:
-                async for llm_event in self._llm.stream(history):
+                async for llm_event in self._llm.stream(
+                    history,
+                    self._tools.to_api_format(),
+                ):
                     if llm_event.type == LLMEventType.TEXT:
                         chunks.append(llm_event.text)
                         yield Envelope.create(
@@ -98,6 +104,21 @@ class BridgeApplication:
                             command.request_id,
                             sequence,
                             {"text": llm_event.text, "message_id": message_id},
+                        )
+                        sequence += 1
+                    elif llm_event.type == LLMEventType.TOOL_USE:
+                        payload: dict[str, object] = {
+                            "id": llm_event.tool_use_id,
+                            "name": llm_event.tool_name,
+                            "input": dict(llm_event.tool_input),
+                        }
+                        if llm_event.tool_error:
+                            payload["error"] = llm_event.tool_error
+                        yield Envelope.create(
+                            "tool_use",
+                            command.request_id,
+                            sequence,
+                            payload,
                         )
                         sequence += 1
                     elif llm_event.type == LLMEventType.USAGE:

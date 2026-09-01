@@ -8,6 +8,17 @@ import type { BridgeEnvelope } from '../../shared/protocol'
 import { chatReducer, initialChatState, type UiMessage } from './state'
 
 function MessageView({ message }: { message: UiMessage }): React.JSX.Element {
+  if (message.role === 'tool') {
+    return (
+      <article className="tool-message" data-status={message.status}>
+        <span>工具请求</span>
+        <div>
+          <strong>{message.name}</strong>
+          <pre>{message.content}</pre>
+        </div>
+      </article>
+    )
+  }
   if (message.role === 'user') {
     return <article className="user-message">{message.content}</article>
   }
@@ -91,6 +102,16 @@ export default function App(): React.JSX.Element {
         type: 'usage_received',
         inputTokens: number(usage.input_tokens),
         outputTokens: number(usage.output_tokens)
+      })
+    } else if (event.type === 'tool_use') {
+      const input = object(event.payload.input)
+      dispatch({
+        type: 'tool_received',
+        requestId: event.request_id,
+        toolUseId: text(event.payload.id, `tool_${event.request_id}`),
+        name: text(event.payload.name, '未知工具'),
+        input: JSON.stringify(input, null, 2),
+        error: text(event.payload.error)
       })
     } else if (event.type === 'turn_complete') {
       dispatch({
