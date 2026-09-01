@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 from typing import TextIO
 
+from jixue.agent import Agent
 from jixue.bridge.application import BridgeApplication
 from jixue.bridge.bootstrap import BridgeBootstrapError, create_runtime_llm
 from jixue.domain.events import Envelope, ProtocolError
@@ -88,8 +89,9 @@ def main() -> None:
 
     tools = ToolRegistry()
     tools.register(create_read_file_tool())
+    agent = Agent(llm, tools=tools)
     server = BridgeServer(
-        BridgeApplication(llm, tools=tools),
+        BridgeApplication(agent),
         sys.stdin,
         sys.stdout,
         sys.stderr,

@@ -2,7 +2,7 @@
 
 霁雪是一个从零学习 Agent Harness 的小项目。名字来自“雪后初晴”。
 
-第一章聊天链路已经完成。第二章也完成了一个最小工具闭环：模型请求 `read_file`，霁雪执行工具、显示结果，再把结果交给模型生成最终回答。Agent Loop、权限、MCP 等功能尚未开始。
+第一章聊天链路和第二章工具闭环已经完成。第三章第 1 步已经把真正的 Agent 核心集中到 `src/jixue/agent.py`；持续循环、取消和并发尚未实现。
 
 ## 现在能做什么
 
@@ -59,5 +59,6 @@ npm run test:electron
 - [第 0 章：工程准备](docs/chapters/00-foundation/README.md)
 - [第 1 章：让 AI 开口说话](docs/chapters/01-llm-ui/README.md)
 - [第 2 章：工具系统](docs/chapters/02-tools/README.md)
+- [第 3 章：Agent Loop](docs/chapters/03-agent-loop/README.md)
 
-第一章 README 讲聊天底座，第二章 README 讲工具闭环。每章只保留一个 README，不再拆成许多文档。
+每章只保留一个 README；第三章 README 会随着每个小步骤继续更新。

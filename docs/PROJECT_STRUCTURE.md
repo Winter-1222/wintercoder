@@ -22,6 +22,7 @@ myAgent/
 
 | 文件 | 职责 |
 | --- | --- |
+| `src/jixue/agent.py` | Agent 核心：维护历史、调用 LLM、执行工具并产生事件 |
 | `src/jixue/domain/conversation.py` | 普通消息、工具内容块、多轮历史和 API 前清洗 |
 | `src/jixue/domain/events.py` | Electron 与 Python 之间的一行 JSON 信封 |
 | `src/jixue/llm/base.py` | 霁雪自己的 LLM 接口和流式事件 |
@@ -29,7 +30,7 @@ myAgent/
 | `src/jixue/llm/config.py` | 从 `models.yaml` 和环境中生成四字段配置 |
 | `src/jixue/llm/adapters/anthropic_client.py` | 唯一接触 Anthropic SDK，解析流并转换工具内容块 |
 | `src/jixue/bridge/bootstrap.py` | 读取项目根目录 `.env`，选择 Fake 或真实 LLM |
-| `src/jixue/bridge/application.py` | 当前核心编排：LLM 请求 → 工具执行 → 结果回传 → 最终回答 |
+| `src/jixue/bridge/application.py` | 把 Electron 命令交给 Agent，再把 Agent 事件包装成信封 |
 | `src/jixue/bridge/server.py` | 从 stdin 收 JSON，从 stdout 发 JSON |
 | `src/jixue/bridge/__main__.py` | 让 `python -m jixue.bridge` 能启动 |
 | `src/jixue/tools/base.py` | 工具合同、ToolResult 和通用 BaseTool |
@@ -37,7 +38,7 @@ myAgent/
 | `src/jixue/tools/read_file.py` | 第一个只读文件工具工厂 |
 | `src/jixue/tools/__init__.py` | 工具层公开导入入口 |
 
-`domain` 不知道 Electron 和 Anthropic 的存在；`adapters` 专门藏住外部 SDK；`bridge` 把桌面端和 Python 业务接起来。
+`agent.py` 是现在最先阅读的核心；`domain` 不知道 Electron 和 Anthropic；`adapters` 藏住外部 SDK；`bridge` 只负责连接桌面端。
 
 ## Electron 桌面端
 
@@ -63,6 +64,7 @@ myAgent/
 | `docs/chapters/00-foundation/README.md` | 环境准备、启动和测试 |
 | `docs/chapters/01-llm-ui/README.md` | 第一章代码和完整消息链路 |
 | `docs/chapters/02-tools/README.md` | 第二章工具底座和执行链路 |
+| `docs/chapters/03-agent-loop/README.md` | 第三章 Agent 核心、循环步骤和手测记录 |
 | `scripts/test-all.ps1` | 顺序执行本地自动化检查 |
 
 每章目录只允许有一个 `README.md`。测试文件虽然存在于本机，但由 `.gitignore` 排除，不会提交。
