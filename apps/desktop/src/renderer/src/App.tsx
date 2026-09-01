@@ -9,12 +9,23 @@ import { chatReducer, initialChatState, type UiMessage } from './state'
 
 function MessageView({ message }: { message: UiMessage }): React.JSX.Element {
   if (message.role === 'tool') {
+    const label =
+      message.status === 'streaming' ? '工具执行中' : message.status === 'failed' ? '工具失败' : '工具完成'
     return (
       <article className="tool-message" data-status={message.status}>
-        <span>工具请求</span>
+        <span>{label}</span>
         <div>
-          <strong>{message.name}</strong>
-          <pre>{message.content}</pre>
+          <header>
+            <strong>{message.name}</strong>
+            {message.durationMs !== undefined && <small>{message.durationMs} 毫秒</small>}
+          </header>
+          {message.input && (
+            <details>
+              <summary>查看输入参数</summary>
+              <pre>{message.input}</pre>
+            </details>
+          )}
+          <pre className="tool-output">{message.content}</pre>
         </div>
       </article>
     )
@@ -112,6 +123,15 @@ export default function App(): React.JSX.Element {
         name: text(event.payload.name, '未知工具'),
         input: JSON.stringify(input, null, 2),
         error: text(event.payload.error)
+      })
+    } else if (event.type === 'tool_result') {
+      dispatch({
+        type: 'tool_completed',
+        requestId: event.request_id,
+        toolUseId: text(event.payload.id, `tool_${event.request_id}`),
+        content: text(event.payload.content, '工具没有返回文本'),
+        isError: event.payload.is_error === true,
+        durationMs: number(event.payload.duration_ms)
       })
     } else if (event.type === 'turn_complete') {
       dispatch({

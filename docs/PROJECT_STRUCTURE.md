@@ -22,18 +22,18 @@ myAgent/
 
 | 文件 | 职责 |
 | --- | --- |
-| `src/jixue/domain/conversation.py` | 消息结构、多轮历史和发给 API 前的清洗 |
+| `src/jixue/domain/conversation.py` | 普通消息、工具内容块、多轮历史和 API 前清洗 |
 | `src/jixue/domain/events.py` | Electron 与 Python 之间的一行 JSON 信封 |
 | `src/jixue/llm/base.py` | 霁雪自己的 LLM 接口和流式事件 |
-| `src/jixue/llm/fake.py` | 离线模拟 LLM，方便免费测试全链路 |
+| `src/jixue/llm/fake.py` | 离线模拟 LLM；`/read 路径` 可免费触发工具闭环 |
 | `src/jixue/llm/config.py` | 从 `models.yaml` 和环境中生成四字段配置 |
-| `src/jixue/llm/adapters/anthropic_client.py` | 唯一接触 Anthropic SDK，并解析文本与 tool_use 流 |
+| `src/jixue/llm/adapters/anthropic_client.py` | 唯一接触 Anthropic SDK，解析流并转换工具内容块 |
 | `src/jixue/bridge/bootstrap.py` | 读取项目根目录 `.env`，选择 Fake 或真实 LLM |
-| `src/jixue/bridge/application.py` | 一轮聊天核心：历史、工具定义 → LLM → UI 事件 |
+| `src/jixue/bridge/application.py` | 当前核心编排：LLM 请求 → 工具执行 → 结果回传 → 最终回答 |
 | `src/jixue/bridge/server.py` | 从 stdin 收 JSON，从 stdout 发 JSON |
 | `src/jixue/bridge/__main__.py` | 让 `python -m jixue.bridge` 能启动 |
 | `src/jixue/tools/base.py` | 工具合同、ToolResult 和通用 BaseTool |
-| `src/jixue/tools/registry.py` | 注册、启用、禁用和导出工具定义 |
+| `src/jixue/tools/registry.py` | 注册、启用、禁用、导出定义和按名称执行工具 |
 | `src/jixue/tools/read_file.py` | 第一个只读文件工具工厂 |
 | `src/jixue/tools/__init__.py` | 工具层公开导入入口 |
 
@@ -47,8 +47,8 @@ myAgent/
 | `apps/desktop/src/main/bridge-process.ts` | 启动 Conda 子进程并处理一行一个 JSON |
 | `apps/desktop/src/preload/index.ts` | 只向网页暴露安全的聊天接口 |
 | `apps/desktop/src/shared/protocol.ts` | 前后端共用的事件类型 |
-| `apps/desktop/src/renderer/src/App.tsx` | 聊天页面和事件接收 |
-| `apps/desktop/src/renderer/src/state.ts` | reducer：更新消息、工具卡片、状态和用量 |
+| `apps/desktop/src/renderer/src/App.tsx` | 聊天页面，接收文字、工具请求与工具结果事件 |
+| `apps/desktop/src/renderer/src/state.ts` | reducer：把工具卡片从执行中更新为完成或失败 |
 | `apps/desktop/src/renderer/src/styles.css` | Codex 风格的界面样式 |
 | `apps/desktop/src/renderer/src/main.tsx` | React 页面入口 |
 

@@ -9,6 +9,8 @@ export interface UiMessage {
   content: string
   status: 'streaming' | 'complete' | 'failed'
   name?: string
+  input?: string
+  durationMs?: number
 }
 
 export interface ChatState {
@@ -33,6 +35,14 @@ export type ChatAction =
       name: string
       input: string
       error: string
+    }
+  | {
+      type: 'tool_completed'
+      requestId: string
+      toolUseId: string
+      content: string
+      isError: boolean
+      durationMs: number
     }
   | { type: 'usage_received'; inputTokens: number; outputTokens: number }
   | { type: 'request_completed'; requestId: string; durationMs: number; model: string }
@@ -102,7 +112,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         }))
       }
     case 'tool_received':
-      // 工具请求也是对话时间线的一部分；input 已转成便于阅读的 JSON 字符串。
+      // 先记录模型想调用什么；真正的结果会由后续 tool_completed 更新进来。
       return {
         ...state,
         messages: [
@@ -112,10 +122,26 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
             requestId: action.requestId,
             role: 'tool',
             name: action.name,
-            content: action.error || action.input,
-            status: action.error ? 'failed' : 'complete'
+            input: action.input,
+            content: action.error || '等待工具执行…',
+            status: action.error ? 'failed' : 'streaming'
           }
         ]
+      }
+    case 'tool_completed':
+      // tool_use_id 是一次工具调用的唯一编号，用它找到并更新同一张工具卡片。
+      return {
+        ...state,
+        messages: state.messages.map((message) =>
+          message.requestId === action.requestId && message.id === action.toolUseId
+            ? {
+                ...message,
+                content: action.content,
+                durationMs: action.durationMs,
+                status: action.isError ? 'failed' : 'complete'
+              }
+            : message
+        )
       }
     case 'usage_received':
       // 后端给的是整个会话累计值，所以这里直接替换而不是再次相加。

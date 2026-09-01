@@ -4,11 +4,17 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+from pathlib import Path
 from time import perf_counter
 from uuid import uuid4
 
 from jixue import __version__
 from jixue.domain.conversation import (
+    APIContentBlock,
+    APIMessage,
+    APITextBlock,
+    APIToolResultBlock,
+    APIToolUseBlock,
     ConversationError,
     ConversationManager,
     Message,
@@ -16,8 +22,8 @@ from jixue.domain.conversation import (
     Usage,
 )
 from jixue.domain.events import Envelope
-from jixue.llm.base import LLMClient, LLMClientError, LLMEventType
-from jixue.tools import ToolRegistry
+from jixue.llm.base import LLMClient, LLMClientError, LLMEventType, LLMStreamEvent
+from jixue.tools import ToolContext, ToolRegistry, ToolResult
 
 
 class BridgeApplication:
@@ -28,10 +34,12 @@ class BridgeApplication:
         llm: LLMClient,
         conversation: ConversationManager | None = None,
         tools: ToolRegistry | None = None,
+        tool_context: ToolContext | None = None,
     ) -> None:
         self._llm = llm
         self._conversation = conversation or ConversationManager()
         self._tools = tools or ToolRegistry()
+        self._tool_context = tool_context or ToolContext(Path.cwd().resolve())
         self._chat_lock = asyncio.Lock()
 
     @property
@@ -48,7 +56,7 @@ class BridgeApplication:
                     "protocol_version": command.version,
                     "backend_version": __version__,
                     "model": self._llm.model_name,
-                    "capabilities": ["stream_text", "tool_use", "usage"],
+                    "capabilities": ["stream_text", "tool_use", "tool_result", "usage"],
                 },
             )
         elif command.type == "chat.send":
@@ -93,75 +101,133 @@ class BridgeApplication:
                 return
 
             try:
-                async for llm_event in self._llm.stream(
-                    history,
-                    self._tools.to_api_format(),
-                ):
-                    if llm_event.type == LLMEventType.TEXT:
-                        chunks.append(llm_event.text)
-                        yield Envelope.create(
-                            "stream_text",
-                            command.request_id,
-                            sequence,
-                            {"text": llm_event.text, "message_id": message_id},
+                tool_definitions = self._tools.to_api_format()
+                stop_reason = "end_turn"
+
+                # 第二章固定最多两次 LLM 请求：请求工具一次，返回结果后收尾一次。
+                for api_pass in range(2):
+                    response_blocks: list[APIContentBlock] = []
+                    tool_calls: list[LLMStreamEvent] = []
+
+                    async for llm_event in self._llm.stream(history, tool_definitions):
+                        if llm_event.type == LLMEventType.TEXT:
+                            chunks.append(llm_event.text)
+                            self._append_text(response_blocks, llm_event.text)
+                            yield Envelope.create(
+                                "stream_text",
+                                command.request_id,
+                                sequence,
+                                {"text": llm_event.text, "message_id": message_id},
+                            )
+                            sequence += 1
+                        elif llm_event.type == LLMEventType.TOOL_USE:
+                            tool_calls.append(llm_event)
+                            response_blocks.append(
+                                APIToolUseBlock(
+                                    llm_event.tool_use_id,
+                                    llm_event.tool_name,
+                                    llm_event.tool_input,
+                                )
+                            )
+                            payload: dict[str, object] = {
+                                "id": llm_event.tool_use_id,
+                                "name": llm_event.tool_name,
+                                "input": dict(llm_event.tool_input),
+                            }
+                            if llm_event.tool_error:
+                                payload["error"] = llm_event.tool_error
+                            yield Envelope.create(
+                                "tool_use", command.request_id, sequence, payload
+                            )
+                            sequence += 1
+                        elif llm_event.type == LLMEventType.USAGE:
+                            turn_usage = self._add_usage(turn_usage, llm_event.usage)
+                            total = self._conversation.total_usage
+                            cumulative = self._add_usage(total, turn_usage)
+                            yield Envelope.create(
+                                "usage",
+                                command.request_id,
+                                sequence,
+                                {
+                                    "turn": self._usage(turn_usage),
+                                    "cumulative": self._usage(cumulative),
+                                },
+                            )
+                            sequence += 1
+                        elif llm_event.type == LLMEventType.COMPLETE:
+                            stop_reason = llm_event.stop_reason or "end_turn"
+
+                    if not tool_calls:
+                        break
+
+                    result_blocks: list[APIContentBlock] = []
+                    for call in tool_calls:
+                        tool_started = perf_counter()
+                        if api_pass == 1:
+                            result = ToolResult(
+                                "本章只支持一次工具往返，请等待 Agent Loop",
+                                is_error=True,
+                            )
+                        elif call.tool_error:
+                            result = ToolResult(call.tool_error, is_error=True)
+                        else:
+                            result = await self._tools.execute(
+                                call.tool_name,
+                                self._tool_context,
+                                call.tool_input,
+                            )
+                        result_blocks.append(
+                            APIToolResultBlock(
+                                call.tool_use_id,
+                                result.content,
+                                result.is_error,
+                            )
                         )
-                        sequence += 1
-                    elif llm_event.type == LLMEventType.TOOL_USE:
-                        payload: dict[str, object] = {
-                            "id": llm_event.tool_use_id,
-                            "name": llm_event.tool_name,
-                            "input": dict(llm_event.tool_input),
-                        }
-                        if llm_event.tool_error:
-                            payload["error"] = llm_event.tool_error
                         yield Envelope.create(
-                            "tool_use",
-                            command.request_id,
-                            sequence,
-                            payload,
-                        )
-                        sequence += 1
-                    elif llm_event.type == LLMEventType.USAGE:
-                        turn_usage = llm_event.usage
-                        total = self._conversation.total_usage
-                        cumulative = Usage(
-                            total.input_tokens + turn_usage.input_tokens,
-                            total.output_tokens + turn_usage.output_tokens,
-                        )
-                        yield Envelope.create(
-                            "usage",
+                            "tool_result",
                             command.request_id,
                             sequence,
                             {
-                                "turn": self._usage(turn_usage),
-                                "cumulative": self._usage(cumulative),
-                            },
-                        )
-                        sequence += 1
-                    elif llm_event.type == LLMEventType.COMPLETE:
-                        turn_usage = llm_event.usage
-                        turn_index = 1 + sum(
-                            message.role == "assistant"
-                            and message.status is MessageStatus.COMPLETE
-                            for message in self._conversation.messages
-                        )
-                        answer = "".join(chunks)
-                        if answer:
-                            self._conversation.add_assistant(answer, usage=turn_usage)
-                        yield Envelope.create(
-                            "turn_complete",
-                            command.request_id,
-                            sequence,
-                            {
-                                "turn_index": turn_index,
-                                "stop_reason": llm_event.stop_reason or "end_turn",
+                                "id": call.tool_use_id,
+                                "name": call.tool_name,
+                                "content": result.content,
+                                "is_error": result.is_error,
                                 "duration_ms": round(
-                                    (perf_counter() - started_at) * 1000
+                                    (perf_counter() - tool_started) * 1000
                                 ),
-                                "model": self._llm.model_name,
-                                "message_id": message_id,
+                                "metadata": dict(result.metadata),
                             },
                         )
+                        sequence += 1
+
+                    if api_pass == 1:
+                        break
+                    history = [
+                        *history,
+                        APIMessage("assistant", tuple(response_blocks)),
+                        APIMessage("user", tuple(result_blocks)),
+                    ]
+
+                turn_index = 1 + sum(
+                    message.role == "assistant"
+                    and message.status is MessageStatus.COMPLETE
+                    for message in self._conversation.messages
+                )
+                answer = "".join(chunks)
+                if answer:
+                    self._conversation.add_assistant(answer, usage=turn_usage)
+                yield Envelope.create(
+                    "turn_complete",
+                    command.request_id,
+                    sequence,
+                    {
+                        "turn_index": turn_index,
+                        "stop_reason": stop_reason,
+                        "duration_ms": round((perf_counter() - started_at) * 1000),
+                        "model": self._llm.model_name,
+                        "message_id": message_id,
+                    },
+                )
             except LLMClientError as error:
                 self._remember_failed(chunks)
                 yield self._error(
@@ -188,6 +254,22 @@ class BridgeApplication:
                 "".join(chunks),
                 status=MessageStatus.FAILED,
             )
+
+    @staticmethod
+    def _append_text(blocks: list[APIContentBlock], text: str) -> None:
+        """合并相邻文本，但保留文本与工具请求的先后顺序。"""
+
+        if blocks and isinstance(blocks[-1], APITextBlock):
+            blocks[-1] = APITextBlock(blocks[-1].text + text)
+        else:
+            blocks.append(APITextBlock(text))
+
+    @staticmethod
+    def _add_usage(left: Usage, right: Usage) -> Usage:
+        return Usage(
+            left.input_tokens + right.input_tokens,
+            left.output_tokens + right.output_tokens,
+        )
 
     @staticmethod
     def _usage(usage: Usage) -> dict[str, int]:

@@ -2,7 +2,7 @@
 
 霁雪是一个从零学习 Agent Harness 的小项目。名字来自“雪后初晴”。
 
-第一章聊天链路已经完成。第二章已完成工具底座，并把 `read_file` 定义送入 LLM；模型返回的流式 `tool_use` 会显示成工具卡片，但还不会真正执行。Agent Loop、权限、MCP 等功能尚未开始。
+第一章聊天链路已经完成。第二章也完成了一个最小工具闭环：模型请求 `read_file`，霁雪执行工具、显示结果，再把结果交给模型生成最终回答。Agent Loop、权限、MCP 等功能尚未开始。
 
 ## 现在能做什么
 
@@ -10,6 +10,7 @@
 - 回复过程中显示纯文本，结束后渲染 Markdown。
 - 状态栏显示模型、累计 Token 和本轮耗时。
 - 默认使用免费的 `FakeLLM`，不联网也能走通整条链路。
+- Fake 模式输入 `/read README.md`，可免费观察一次完整工具调用。
 - 在项目根目录 `.env` 中配置后，可调用 Anthropic 协议兼容的 DeepSeek 模型。
 - Python 领域代码不依赖 Anthropic SDK，后续更换供应商只改适配器。
 
@@ -59,4 +60,4 @@ npm run test:electron
 - [第 1 章：让 AI 开口说话](docs/chapters/01-llm-ui/README.md)
 - [第 2 章：工具系统](docs/chapters/02-tools/README.md)
 
-第一章 README 是理解当前代码的主入口。每章只保留一个 README，不再拆成许多文档。
+第一章 README 讲聊天底座，第二章 README 讲工具闭环。每章只保留一个 README，不再拆成许多文档。

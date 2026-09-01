@@ -13,6 +13,7 @@ button, textarea { font: inherit; }
   display: grid;
   grid-template-columns: 230px 1fr;
   height: 100%;
+  min-height: 0;
 }
 
 .sidebar {
@@ -91,6 +92,8 @@ button, textarea { font: inherit; }
 .workspace {
   display: grid;
   min-width: 0;
+  min-height: 0;
+  overflow: hidden;
   grid-template-rows: 50px 1fr auto;
   background: #fdfdfc;
 }
@@ -106,7 +109,11 @@ button, textarea { font: inherit; }
 }
 
 .conversation {
-  overflow: auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
   padding: 36px 24px 20px;
 }
 
@@ -182,6 +189,11 @@ button, textarea { font: inherit; }
 .tool-message > span { color: #718087; font-size: 12px; }
 .tool-message strong { font-size: 13px; }
 .tool-message pre { margin: 6px 0 0; overflow: auto; color: #596367; font-size: 12px; }
+.tool-message header { display: flex; align-items: center; justify-content: space-between; }
+.tool-message header small { color: #849095; }
+.tool-message details { margin-top: 7px; color: #718087; font-size: 12px; }
+.tool-message summary { cursor: pointer; }
+.tool-message .tool-output { max-height: 180px; white-space: pre-wrap; }
 .tool-message[data-status='failed'] { border-color: #e2c4bf; background: #fff6f4; }
 
 .cursor {

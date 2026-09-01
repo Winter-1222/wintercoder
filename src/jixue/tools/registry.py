@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from jixue.tools.base import Tool
+from jixue.tools.base import Tool, ToolContext, ToolInput, ToolResult
 
 
 class ToolRegistry:
@@ -36,6 +36,19 @@ class ToolRegistry:
     def enabled_tools(self) -> tuple[Tool, ...]:
         # 固定按名称排序，让每次 API 请求的工具顺序稳定，方便 Prompt Cache 命中。
         return tuple(self._tools[name] for name in sorted(self._enabled))
+
+    async def execute(
+        self,
+        name: str,
+        context: ToolContext,
+        tool_input: ToolInput,
+    ) -> ToolResult:
+        """找不到或已禁用也返回 ToolResult，让模型有机会改正。"""
+
+        tool = self.get(name)
+        if tool is None:
+            return ToolResult(f"工具不存在或已禁用：{name}", is_error=True)
+        return await tool.execute(context, tool_input)
 
     def to_api_format(self) -> list[dict[str, object]]:
         """只输出通用 JSON；Anthropic SDK 类型仍留在适配器内部。"""

@@ -1,7 +1,12 @@
 """霁雪自己的领域类型，不依赖任何外部 SDK。"""
 
 from jixue.domain.conversation import (
+    APIContent,
+    APIContentBlock,
     APIMessage,
+    APITextBlock,
+    APIToolResultBlock,
+    APIToolUseBlock,
     ConversationError,
     ConversationManager,
     Message,
@@ -12,7 +17,12 @@ from jixue.domain.conversation import (
 from jixue.domain.events import Envelope, ProtocolError
 
 __all__ = [
+    "APIContent",
+    "APIContentBlock",
     "APIMessage",
+    "APITextBlock",
+    "APIToolResultBlock",
+    "APIToolUseBlock",
     "ConversationError",
     "ConversationManager",
     "Envelope",

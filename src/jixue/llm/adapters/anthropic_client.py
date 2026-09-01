@@ -7,9 +7,21 @@ from collections.abc import AsyncIterator, Callable, Sequence
 from typing import cast
 
 import anthropic
-from anthropic.types import MessageParam, ToolParam
+from anthropic.types import (
+    ContentBlockParam,
+    MessageParam,
+    TextBlockParam,
+    ToolParam,
+    ToolResultBlockParam,
+    ToolUseBlockParam,
+)
 
-from jixue.domain.conversation import APIMessage, Usage
+from jixue.domain.conversation import (
+    APIMessage,
+    APITextBlock,
+    APIToolUseBlock,
+    Usage,
+)
 from jixue.llm.base import (
     LLMClientError,
     LLMEventType,
@@ -45,10 +57,7 @@ class AnthropicLLMClient:
         messages: Sequence[APIMessage],
         tools: Sequence[ToolDefinition] = (),
     ) -> AsyncIterator[LLMStreamEvent]:
-        sdk_messages: list[MessageParam] = [
-            {"role": message.role, "content": message.content}
-            for message in messages
-        ]
+        sdk_messages = [_to_sdk_message(message) for message in messages]
         sdk_tools = cast(list[ToolParam], [dict(tool) for tool in tools])
         tool_buffers: dict[int, tuple[str, str, list[str]]] = {}
         try:
@@ -105,6 +114,41 @@ class AnthropicLLMClient:
                 max_retries=2,
             )
         return self._client
+
+
+def _to_sdk_message(message: APIMessage) -> MessageParam:
+    """把霁雪内容块翻译成官方 SDK 类型，SDK 类型不会离开本文件。"""
+
+    if isinstance(message.content, str):
+        return {"role": message.role, "content": message.content}
+
+    blocks: list[ContentBlockParam] = []
+    for block in message.content:
+        sdk_block: ContentBlockParam
+        if isinstance(block, APITextBlock):
+            sdk_block = cast(TextBlockParam, {"type": "text", "text": block.text})
+        elif isinstance(block, APIToolUseBlock):
+            sdk_block = cast(
+                ToolUseBlockParam,
+                {
+                    "type": "tool_use",
+                    "id": block.id,
+                    "name": block.name,
+                    "input": dict(block.input),
+                },
+            )
+        else:
+            sdk_block = cast(
+                ToolResultBlockParam,
+                {
+                    "type": "tool_result",
+                    "tool_use_id": block.tool_use_id,
+                    "content": block.content,
+                    "is_error": block.is_error,
+                },
+            )
+        blocks.append(sdk_block)
+    return {"role": message.role, "content": blocks}
 
 
 def _tool_use_event(

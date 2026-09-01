@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -42,11 +42,40 @@ class Message:
 
 
 @dataclass(frozen=True, slots=True)
+class APITextBlock:
+    """一段模型文字；只在同一消息还包含工具块时使用。"""
+
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class APIToolUseBlock:
+    """模型请求调用工具。"""
+
+    id: str
+    name: str
+    input: Mapping[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class APIToolResultBlock:
+    """客户端执行工具后，回给模型的结果。"""
+
+    tool_use_id: str
+    content: str
+    is_error: bool = False
+
+
+type APIContentBlock = APITextBlock | APIToolUseBlock | APIToolResultBlock
+type APIContent = str | tuple[APIContentBlock, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class APIMessage:
-    """LLM API 只需要 role 和 content。"""
+    """供应商无关的 API 消息；内容可以是文字或工具块。"""
 
     role: Role
-    content: str
+    content: APIContent
 
 
 class ConversationError(ValueError):

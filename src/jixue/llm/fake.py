@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Sequence
 
-from jixue.domain.conversation import APIMessage, Usage
+from jixue.domain.conversation import APIMessage, APIToolResultBlock, Usage
 from jixue.llm.base import LLMEventType, LLMStreamEvent, ToolDefinition
 
 
@@ -30,18 +30,52 @@ class FakeLLMClient:
     ) -> AsyncIterator[LLMStreamEvent]:
         """读取完整历史，并把固定 Markdown 按不规则边界拆成文本增量。"""
 
-        # ConversationManager 保证最后一条是本轮用户输入；防御性回退只用于直接调用。
         latest_content = messages[-1].content if messages else ""
-        # 只回显前 28 个字符并把换行改为空格，避免固定回复被超长输入撑大。
-        preview = latest_content.strip().replace("\n", " ")[:28] or "空消息"
-        response = (
-            "## 霁雪已经醒来\n\n"
-            f"我收到了你的消息：**{preview}**\n\n"
-            "- Python Bridge 正常\n"
-            "- NDJSON 事件流正常\n"
-            "- Electron 可以继续接收下一轮消息\n\n"
-            "当前使用的是 `FakeLLM`，所以不会产生 API 费用。"
-        )
+        history_characters = sum(len(str(message.content)) for message in messages)
+
+        # `/read 路径` 是教学用的确定性入口，方便不花 API 费用手测工具闭环。
+        if isinstance(latest_content, str) and latest_content.startswith("/read "):
+            path = latest_content.removeprefix("/read ").strip()
+            has_read_file = any(tool.get("name") == "read_file" for tool in tools)
+            if path and has_read_file:
+                usage = Usage(max(1, history_characters // 4), 8)
+                yield LLMStreamEvent(
+                    LLMEventType.TOOL_USE,
+                    tool_use_id="fake_tool_1",
+                    tool_name="read_file",
+                    tool_input={"path": path},
+                )
+                yield LLMStreamEvent(LLMEventType.USAGE, usage=usage)
+                yield LLMStreamEvent(
+                    LLMEventType.COMPLETE,
+                    usage=usage,
+                    stop_reason="tool_use",
+                )
+                return
+
+        if isinstance(latest_content, tuple):
+            results = [
+                block for block in latest_content if isinstance(block, APIToolResultBlock)
+            ]
+            previews = []
+            for result in results:
+                content = result.content
+                if len(content) > 400:
+                    content = content[:400] + "\n\n（FakeLLM 仅展示前 400 字）"
+                label = "执行失败" if result.is_error else "执行成功"
+                previews.append(f"**{label}**\n\n{content}")
+            response = "## 工具执行完成\n\n" + "\n\n".join(previews)
+        else:
+            # 只回显前 28 个字符，避免固定回复被超长输入撑大。
+            preview = latest_content.strip().replace("\n", " ")[:28] or "空消息"
+            response = (
+                "## 霁雪已经醒来\n\n"
+                f"我收到了你的消息：**{preview}**\n\n"
+                "- Python Bridge 正常\n"
+                "- NDJSON 事件流正常\n"
+                "- Electron 可以继续接收下一轮消息\n\n"
+                "当前使用的是 `FakeLLM`，所以不会产生 API 费用。"
+            )
 
         # 故意使用不规则分片，模拟真实 SDK 可能在任意 Markdown 边界切开的情况。
         chunk_sizes = (1, 2, 5, 3, 8)
@@ -59,7 +93,6 @@ class FakeLLMClient:
             yield LLMStreamEvent(type=LLMEventType.TEXT, text=chunk)
 
         # FakeLLM 没有真实 tokenizer，仅用约 4 字符/Token 的保守估算验证状态栏。
-        history_characters = sum(len(message.content) for message in messages)
         usage = Usage(
             input_tokens=max(1, (history_characters + 3) // 4),
             output_tokens=max(1, (len(response) + 3) // 4),
