@@ -40,6 +40,8 @@ class BridgeApplication:
                         "tool_use",
                         "tool_result",
                         "usage",
+                        "turn_complete",
+                        "loop_complete",
                     ],
                 },
             )

@@ -135,10 +135,17 @@ export default function App(): React.JSX.Element {
       })
     } else if (event.type === 'turn_complete') {
       dispatch({
-        type: 'request_completed',
+        type: 'turn_completed',
+        requestId: event.request_id,
+        iteration: number(event.payload.iteration)
+      })
+    } else if (event.type === 'loop_complete') {
+      dispatch({
+        type: 'loop_completed',
         requestId: event.request_id,
         durationMs: number(event.payload.duration_ms),
-        model: text(event.payload.model, state.model)
+        model: text(event.payload.model, state.model),
+        isError: event.payload.is_error === true
       })
     } else if (event.type === 'error') {
       dispatch({
@@ -227,6 +234,11 @@ export default function App(): React.JSX.Element {
             <div className="composer-toolbar">
               <div className="run-status">
                 <span className="model-chip">{state.model}</span>
+                <span>
+                  {state.activeRequestId
+                    ? `正在第 ${state.iteration + 1} 轮`
+                    : `共 ${state.iteration} 轮`}
+                </span>
                 <span>输入 {state.usage.inputTokens}</span>
                 <span>输出 {state.usage.outputTokens}</span>
                 <span>{elapsed.toFixed(1)} 秒</span>

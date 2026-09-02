@@ -33,6 +33,7 @@ class AgentEventType(StrEnum):
     TOOL_RESULT = "tool_result"
     USAGE = "usage"
     TURN_COMPLETE = "turn_complete"
+    LOOP_COMPLETE = "loop_complete"
     ERROR = "error"
 
 
@@ -45,7 +46,7 @@ class AgentEvent:
 
 
 class Agent:
-    """协调对话、模型和工具；当前仍只允许一次工具往返。"""
+    """协调对话、模型和工具，并让模型持续工作到任务结束。"""
 
     def __init__(
         self,
@@ -53,11 +54,15 @@ class Agent:
         conversation: ConversationManager | None = None,
         tools: ToolRegistry | None = None,
         tool_context: ToolContext | None = None,
+        max_iterations: int = 50,
     ) -> None:
+        if max_iterations < 1:
+            raise ValueError("最大循环轮数必须大于 0")
         self._llm = llm
         self._conversation = conversation or ConversationManager()
         self._tools = tools or ToolRegistry()
         self._tool_context = tool_context or ToolContext(Path.cwd().resolve())
+        self._max_iterations = max_iterations
 
     @property
     def model_name(self) -> str:
@@ -101,9 +106,13 @@ class Agent:
         try:
             tool_definitions = self._tools.to_api_format()
             stop_reason = "end_turn"
+            iterations = 0
+            reached_limit = False
 
-            # 先原样保留第二章行为；下一小步才把固定两次改成真正循环。
-            for api_pass in range(2):
+            # 一轮就是一次 LLM 请求。模型需要工具时，执行后把结果送回下一轮；
+            # 模型不再请求工具时，说明它已经给出最终答复，循环自然结束。
+            for iteration in range(1, self._max_iterations + 1):
+                iterations = iteration
                 response_blocks: list[APIContentBlock] = []
                 tool_calls: list[LLMStreamEvent] = []
 
@@ -147,18 +156,38 @@ class Agent:
                     elif llm_event.type == LLMEventType.COMPLETE:
                         stop_reason = llm_event.stop_reason or "end_turn"
 
+                # turn_complete 只表示“这一轮 LLM 请求结束”，不是整个任务结束。
+                yield _event(
+                    AgentEventType.TURN_COMPLETE,
+                    iteration=iteration,
+                    stop_reason=stop_reason,
+                    tool_calls=len(tool_calls),
+                )
+
                 if not tool_calls:
+                    break
+
+                # 最后一轮仍请求工具时不再真的执行，避免任务无限运行。
+                # 但仍给 UI 发错误结果，把“执行中”的工具卡片正常收尾。
+                if iteration == self._max_iterations:
+                    reached_limit = True
+                    stop_reason = "max_iterations"
+                    for call in tool_calls:
+                        yield _event(
+                            AgentEventType.TOOL_RESULT,
+                            id=call.tool_use_id,
+                            name=call.tool_name,
+                            content="已达到 Agent 最大循环轮数，工具未执行",
+                            is_error=True,
+                            duration_ms=0,
+                            metadata={},
+                        )
                     break
 
                 result_blocks: list[APIContentBlock] = []
                 for call in tool_calls:
                     tool_started = perf_counter()
-                    if api_pass == 1:
-                        result = ToolResult(
-                            "当前步骤只支持一次工具往返，下一步再改为循环",
-                            is_error=True,
-                        )
-                    elif call.tool_error:
+                    if call.tool_error:
                         result = ToolResult(call.tool_error, is_error=True)
                     else:
                         result = await self._tools.execute(
@@ -184,14 +213,24 @@ class Agent:
                         metadata=dict(result.metadata),
                     )
 
-                if api_pass == 1:
-                    break
                 # 工具结果必须紧跟模型的 tool_use，并使用相同的 tool_use_id。
                 history = [
                     *history,
                     APIMessage("assistant", tuple(response_blocks)),
                     APIMessage("user", tuple(result_blocks)),
                 ]
+
+            if reached_limit:
+                warning = (
+                    f"\n\n> Agent 已执行 {self._max_iterations} 轮但仍未完成，"
+                    "已自动停止。"
+                )
+                chunks.append(warning)
+                yield _event(
+                    AgentEventType.STREAM_TEXT,
+                    text=warning,
+                    message_id=message_id,
+                )
 
             turn_index = 1 + sum(
                 message.role == "assistant"
@@ -200,14 +239,25 @@ class Agent:
             )
             answer = "".join(chunks)
             if answer:
-                self._conversation.add_assistant(answer, usage=turn_usage)
+                self._conversation.add_assistant(
+                    answer,
+                    usage=turn_usage,
+                    status=(
+                        MessageStatus.FAILED
+                        if reached_limit
+                        else MessageStatus.COMPLETE
+                    ),
+                )
+            # loop_complete 才表示这一条用户任务彻底结束，UI 应在这里解锁输入框。
             yield _event(
-                AgentEventType.TURN_COMPLETE,
+                AgentEventType.LOOP_COMPLETE,
                 turn_index=turn_index,
+                iterations=iterations,
                 stop_reason=stop_reason,
                 duration_ms=round((perf_counter() - started_at) * 1000),
                 model=self.model_name,
                 message_id=message_id,
+                is_error=reached_limit,
             )
         except LLMClientError as error:
             self._remember_failed(chunks)

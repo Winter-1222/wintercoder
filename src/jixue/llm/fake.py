@@ -33,6 +33,48 @@ class FakeLLMClient:
         latest_content = messages[-1].content if messages else ""
         history_characters = sum(len(str(message.content)) for message in messages)
 
+        # `/loop 文件1 文件2` 会在三轮 LLM 请求中连续触发两次读文件，
+        # 用来离线观察“模型 → 工具 → 模型 → 工具 → 模型”的完整循环。
+        command_index = next(
+            (
+                index
+                for index in range(len(messages) - 1, -1, -1)
+                if messages[index].role == "user"
+                and isinstance(messages[index].content, str)
+            ),
+            -1,
+        )
+        loop_paths: list[str] = []
+        loop_result_count = 0
+        if command_index >= 0:
+            command = messages[command_index].content
+            assert isinstance(command, str)
+            if command.startswith("/loop "):
+                loop_paths = command.removeprefix("/loop ").split()
+                loop_result_count = sum(
+                    isinstance(block, APIToolResultBlock)
+                    for message in messages[command_index + 1 :]
+                    if isinstance(message.content, tuple)
+                    for block in message.content
+                )
+
+        if len(loop_paths) == 2 and loop_result_count < 2:
+            has_read_file = any(tool.get("name") == "read_file" for tool in tools)
+            if has_read_file:
+                usage = Usage(max(1, history_characters // 4), 8)
+                yield LLMStreamEvent(
+                    LLMEventType.TOOL_USE,
+                    tool_use_id=f"fake_loop_{loop_result_count + 1}",
+                    tool_name="read_file",
+                    tool_input={"path": loop_paths[loop_result_count]},
+                )
+                yield LLMStreamEvent(LLMEventType.USAGE, usage=usage)
+                yield LLMStreamEvent(
+                    LLMEventType.COMPLETE,
+                    usage=usage,
+                    stop_reason="tool_use",
+                )
+                return
         # `/read 路径` 是教学用的确定性入口，方便不花 API 费用手测工具闭环。
         if isinstance(latest_content, str) and latest_content.startswith("/read "):
             path = latest_content.removeprefix("/read ").strip()
@@ -53,7 +95,13 @@ class FakeLLMClient:
                 )
                 return
 
-        if isinstance(latest_content, tuple):
+        if len(loop_paths) == 2 and loop_result_count >= 2:
+            response = (
+                "## Agent Loop 完成\n\n"
+                f"我按顺序读取了 `{loop_paths[0]}` 和 `{loop_paths[1]}`。\n\n"
+                "这次任务一共经历了 **3 轮 LLM 请求** 和 **2 次工具执行**。"
+            )
+        elif isinstance(latest_content, tuple):
             results = [
                 block for block in latest_content if isinstance(block, APIToolResultBlock)
             ]

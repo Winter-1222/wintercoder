@@ -19,6 +19,7 @@ export interface ChatState {
   activeRequestId: string | null
   startedAt: number | null
   durationMs: number
+  iteration: number
   model: string
   usage: { inputTokens: number; outputTokens: number }
 }
@@ -45,7 +46,14 @@ export type ChatAction =
       durationMs: number
     }
   | { type: 'usage_received'; inputTokens: number; outputTokens: number }
-  | { type: 'request_completed'; requestId: string; durationMs: number; model: string }
+  | { type: 'turn_completed'; requestId: string; iteration: number }
+  | {
+      type: 'loop_completed'
+      requestId: string
+      durationMs: number
+      model: string
+      isError: boolean
+    }
   | { type: 'request_failed'; requestId: string; message: string }
 
 export const initialChatState: ChatState = {
@@ -54,6 +62,7 @@ export const initialChatState: ChatState = {
   activeRequestId: null,
   startedAt: null,
   durationMs: 0,
+  iteration: 0,
   model: 'fake-jixue',
   usage: { inputTokens: 0, outputTokens: 0 }
 }
@@ -83,6 +92,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         activeRequestId: action.requestId,
         startedAt: action.startedAt,
         durationMs: 0,
+        iteration: 0,
         messages: [
           ...state.messages,
           {
@@ -143,14 +153,19 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
             : message
         )
       }
+    case 'turn_completed':
+      // 一轮只代表一次 LLM 请求结束；只记轮数，不能提前解锁输入框。
+      if (state.activeRequestId !== action.requestId) return state
+      return { ...state, iteration: action.iteration }
     case 'usage_received':
       // 后端给的是整个会话累计值，所以这里直接替换而不是再次相加。
       return {
         ...state,
         usage: { inputTokens: action.inputTokens, outputTokens: action.outputTokens }
       }
-    case 'request_completed':
-      // complete 会让 MessageView 从纯文本切换为一次性的 Markdown 渲染。
+    case 'loop_completed':
+      // 整个 Agent Loop 结束后才解锁输入框，并进行一次 Markdown 渲染。
+      if (state.activeRequestId !== action.requestId) return state
       return {
         ...state,
         activeRequestId: null,
@@ -159,7 +174,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         model: action.model,
         messages: updateAssistant(state.messages, action.requestId, (message) => ({
           ...message,
-          status: 'complete'
+          status: action.isError ? 'failed' : 'complete'
         })).filter(
           (message) =>
             message.requestId !== action.requestId ||

@@ -1,125 +1,151 @@
 # 第 3 章：Agent Loop
 
-本章正在开发。第 1 步只完成一件事：让项目中真正出现一个容易找到的 Agent 核心，同时保持第二章功能完全不变。
+本章的目标是让霁雪不只“调用一次工具就停下”，而是可以反复执行：模型决定用工具，Agent 执行工具，把结果交还模型，直到模型给出最终回答。
 
-现在找 Agent，直接打开：
-
-```text
-src/jixue/agent.py
-```
-
-它目前仍然固定最多请求两次 LLM，只允许一次工具往返。真正的循环、停止条件、取消和并发将在后续小步骤加入。
+本步骤已经完成最小循环、自然停止、50 轮上限和界面轮次展示。用户取消、异常工具连续检测、并发执行和 Plan Mode 还没有实现。
 
 ## 当前成果
 
-- 新增 `Agent`：维护对话历史、调用 LLM、执行工具并产生事件。
-- 新增 `AgentEvent`：Agent 与 Electron 界面之间不直接依赖。
-- `BridgeApplication` 从两百多行核心逻辑缩成协议转发层。
-- 启动时显式执行 `Agent(llm, tools=tools)`，不再把 Agent 藏在 Bridge 中。
-- SDK 仍然只存在于 Anthropic 适配器，Agent 只认识 `LLMClient`。
+- 真正的 Agent 核心仍只有一个入口：`src/jixue/agent.py` 中的 `Agent.run()`。
+- 一轮代表一次 LLM API 请求；一次用户任务可以包含很多轮。
+- 模型返回工具请求时，Agent 执行全部工具，再进入下一轮。
+- 模型不再请求工具时，循环自然结束。
+- 默认最多执行 50 轮，防止模型无限循环。
+- `turn_complete` 表示一轮 LLM 结束，`loop_complete` 表示整条用户任务结束。
+- Fake 模式新增 `/loop 文件1 文件2`，无需 API Key 就能观察三轮循环。
+- 页面状态栏会显示当前进行到第几轮。
 
 ## 推荐阅读顺序
 
-1. `src/jixue/agent.py`：先看真正的核心。
-2. `src/jixue/bridge/application.py`：看 Bridge 如何转发事件。
-3. `src/jixue/bridge/server.py`：看程序启动时如何组装 Agent。
-4. `src/jixue/llm/base.py`：看 Agent 依赖的供应商无关接口。
-5. 第二章 README：不理解工具内容块时再回去复习。
+只按下面顺序看，不需要一开始读完整个项目：
 
-## Agent 和 Bridge 有什么区别
+1. `src/jixue/agent.py`：重点看 `Agent.run()` 中的 `for iteration`。
+2. `src/jixue/llm/fake.py`：看 `/loop` 怎样确定性地请求两次工具。
+3. `src/jixue/tools/registry.py`：复习 Agent 怎样按名称执行工具。
+4. `src/jixue/bridge/application.py`：看 AgentEvent 怎样被套上通信信封。
+5. `apps/desktop/src/renderer/src/App.tsx`：看页面怎样分发事件。
+6. `apps/desktop/src/renderer/src/state.ts`：看 reducer 怎样记录轮次和完成状态。
 
-可以把它们想成“厨师”和“服务员”：
+如果只想先抓住核心，读前两个文件就够了。
 
-| 部件 | 职责 | 不应该做什么 |
+## Agent、Bridge 和界面的分工
+
+| 部件 | 它负责什么 | 它不知道什么 |
 | --- | --- | --- |
-| `Agent` | 思考流程：历史、模型、工具、结果 | 不读取 stdin，不知道 Electron |
-| `BridgeApplication` | 协议翻译：命令和信封 | 不调用 LLM，不执行工具 |
-| `BridgeServer` | stdin/stdout 收发 JSON | 不理解聊天业务 |
-| `Renderer` | 展示文字和工具卡片 | 不理解 Agent 内部轮次 |
+| `Agent` | 历史、LLM、工具、循环、停止 | Electron、stdin、页面样式 |
+| `BridgeApplication` | 给事件补请求编号和顺序 | 模型为何调用工具 |
+| `BridgeServer` | stdin/stdout 收发一行 JSON | Agent 业务逻辑 |
+| React 页面 | 展示文字、工具卡片、轮次 | SDK 和循环内部实现 |
 
-这样以后即使把 Electron 换成网页或终端，`Agent.run()` 仍然可以原样使用。
+所以以后即使换成网页或终端 UI，`Agent.run()` 仍可复用。
 
-## 一条消息现在怎样跑
+## 一条普通消息怎样跑
 
-先看全貌：
+普通消息不需要工具，只经历一轮：
 
 ```text
 用户输入
   → Electron 发送 chat.send
-  → BridgeApplication 拆出文字
-  → Agent.run(文字)
-  → ConversationManager 生成历史
-  → LLM 流式返回文字或 tool_use
-  → Agent 执行工具并生成 AgentEvent
-  → Bridge 把 AgentEvent 包装成 Envelope
-  → Electron 根据事件更新界面
+  → BridgeApplication 调用 Agent.run(文字)
+  → Agent 把用户消息加入 ConversationManager
+  → Agent 第 1 轮调用 LLMClient.stream()
+  → LLM 流式返回 text
+  → Agent 连续发出 stream_text
+  → LLM 返回 end_turn，且没有 tool_use
+  → Agent 发出 turn_complete（第 1 轮结束）
+  → Agent 发出 loop_complete（整个任务结束）
+  → reducer 解锁输入框并做 Markdown 渲染
 ```
 
-按代码顺序展开：
-
-1. `BridgeServer` 从 stdin 读到一行 `chat.send` JSON。
-2. `BridgeApplication.handle()` 取出其中的 `text`。
-3. Bridge 在聊天锁内调用 `self._agent.run(user_text)`。
-4. `Agent.run()` 把用户消息加入 `ConversationManager`。
-5. Agent 从注册中心取得工具定义，然后调用 `LLMClient.stream()`。
-6. 模型每返回一段文字，Agent 立即产生 `stream_text` 事件。
-7. 模型返回 `tool_use` 时，Agent 找到工具并执行。
-8. Agent 产生 `tool_result`，再把结果交给 LLM 生成最终文字。
-9. Agent 最后产生 `turn_complete`。
-10. Bridge 只为每个事件补上 `request_id`、`sequence` 和时间戳。
-11. Electron 收到信封并更新 reducer，Agent 完全不知道页面长什么样。
-
-最核心的伪代码：
+最重要的判断不是“有没有文字”，而是“这一轮有没有 `tool_use`”：
 
 ```python
-async for agent_event in agent.run(用户文字):
-    envelope = 给事件加上请求编号和顺序
-    发送给 Electron
+for iteration in range(1, 51):
+    模型响应 = 调用一次 LLM
+    发出 turn_complete
+
+    if 模型没有请求工具:
+        break
+
+    执行工具
+    把 tool_use 和 tool_result 追加到历史
+
+发出 loop_complete
 ```
 
-## AgentEvent 是什么
+这段伪代码就是当前 Agent Loop 的骨架。
 
-事件表示“刚刚发生了一件事”。现在有：
+## `/loop` 的三轮完整链路
 
-| 事件 | 含义 |
-| --- | --- |
-| `stream_text` | 模型又输出了一小段文字 |
-| `tool_use` | 模型请求调用工具 |
-| `tool_result` | 工具执行完成或失败 |
-| `usage` | Token 用量有更新 |
-| `turn_complete` | 当前用户消息处理结束 |
-| `error` | 出现可展示给用户的错误 |
+在 Fake 模式输入：
 
-`AgentEvent` 不包含 Electron 的请求编号和事件序号。这两个字段属于通信协议，由 Bridge 添加。
+```text
+/loop README.md docs/ROADMAP.md
+```
 
-## 为什么继续使用手写流程
+它会确定性地走下面这条链路：
 
-官方 SDK 有自动 Tool Runner，但霁雪后面需要破坏性操作确认、用户取消、并发分批和自定义 UI 事件，所以保留手写流程更容易控制。`Codex-api` 技能也要求手写流程必须保留完整 `tool_use` 块，并使用匹配的 `tool_use_id` 返回结果；当前代码继续遵守这两点。
+```text
+第 1 轮 LLM
+  → 请求 read_file(README.md)
+  → turn_complete(iteration=1)
+  → Agent 执行工具
+  → tool_result(fake_loop_1)
+
+第 2 轮 LLM
+  → 收到上一轮完整的 tool_use + tool_result
+  → 请求 read_file(docs/ROADMAP.md)
+  → turn_complete(iteration=2)
+  → Agent 执行工具
+  → tool_result(fake_loop_2)
+
+第 3 轮 LLM
+  → 收到前两次工具请求和结果
+  → 输出最终 Markdown
+  → stop_reason=end_turn，没有新工具
+  → turn_complete(iteration=3)
+  → loop_complete(iterations=3)
+```
+
+为什么工具请求和工具结果都要放回历史？因为模型必须知道“自己刚才请求了什么，以及工具回答了什么”，才能决定下一步。`tool_result.tool_use_id` 还必须和原来的工具请求 ID 相同，否则供应商会拒绝消息格式。
+
+## 两个完成事件为什么不能合并
+
+| 事件 | 含义 | UI 应该做什么 |
+| --- | --- | --- |
+| `turn_complete` | 一次 LLM 请求结束 | 更新轮次，继续等待 |
+| `loop_complete` | 整条用户任务结束 | 解锁输入框，完成 Markdown 渲染 |
+
+如果收到第一次 `turn_complete` 就解锁输入框，用户可能在工具还没执行时发送新消息，两条历史会交叉。因此 reducer 只有收到 `loop_complete` 才真正收口。
+
+## 50 轮上限怎样停止
+
+默认上限是 50。若第 50 轮仍请求工具：
+
+1. 不再真正执行这批工具。
+2. 给工具卡片返回错误结果，避免它一直显示“执行中”。
+3. 在回复中加入“已自动停止”的提示。
+4. 发出 `loop_complete`，其中 `stop_reason` 是 `max_iterations`。
+
+测试时可以传入 `Agent(..., max_iterations=3)`，不用真的跑 50 轮。正常启动不传这个参数，使用默认值即可。
 
 ## 启动和手动测试
 
-在项目根目录运行：
+确认项目根目录 `.env` 中没有真实配置或把 `JIXUE_LLM_MODE` 设为 `fake`，然后在项目根目录运行：
 
 ```powershell
 npm run dev
 ```
 
-Fake 模式先发送普通消息，确认流式聊天正常；再发送：
+依次测试：
 
-```text
-/read README.md
-```
+1. 输入普通消息，应该显示“正在第 1 轮”，最后显示“共 1 轮”。
+2. 输入 `/read README.md`，应该出现一张工具卡片，最后显示“共 2 轮”。
+3. 输入 `/loop README.md docs/ROADMAP.md`，应该依次出现两张 `read_file` 卡片，最后显示“共 3 轮”。
+4. 两张卡片都完成后，最终回复应出现“Agent Loop 完成”。
+5. 完成后输入框应恢复可用，页面仍能上下滚动。
 
-正常现象：
-
-1. 普通回复仍然逐段显示。
-2. `read_file` 工具卡片出现并完成。
-3. 模型根据工具结果生成最终 Markdown。
-4. 页面仍可上下滚动。
-
-这一步是内部重构，因此界面表现应当和第二章结束时完全一样。
-
-自动测试：
+自动检查：
 
 ```powershell
 npm run test:all
@@ -130,32 +156,51 @@ npm run test:electron
 
 ## 常见坑
 
-- 在 `agent.py` 导入 `anthropic`：会破坏供应商隔离，SDK 只能留在适配器。
-- 在 Bridge 中重新加入工具逻辑：职责会再次混在一起。
-- AgentEvent 直接携带 `request_id`：这会让 Agent 依赖某一种 UI 协议。
-- 误以为现在已有循环：当前 `range(2)` 仍是第二章的一次工具往返。
-- 重构后工具结果 ID 不一致：`tool_result.tool_use_id` 必须对应原请求。
+- 把 `turn_complete` 当成任务结束：工具循环会在第一轮就被 UI 提前截断。
+- 只把 `tool_result` 放回历史：模型看不到对应的 assistant `tool_use`，API 消息格式不完整。
+- 工具失败就抛程序异常：模型失去调整参数和重试的机会；普通工具错误应继续作为 `ToolResult` 返回。
+- 忘记上限：模型可能重复请求同一个工具，任务永远不结束。
+- 用 `stop_reason=end_turn` 作为唯一判断：当前实现优先检查有无工具请求，更容易兼容不同供应商。
+- 在 Agent 中导入 `anthropic`：会破坏供应商隔离，SDK 只能存在于适配器。
+
+## 暂未实现
+
+- 用户点击停止并传播取消信号。
+- 连续请求不存在工具时提前终止。
+- 根据 `isConcurrencySafe()` 对多个工具分批并发。
+- `/plan`、`/do` 和只读工具模式。
+
+这些能力会继续按小步骤加入，本步骤不提前增加抽象。
 
 ## 本章变更记录
 
-- 第 1 步：新增 `src/jixue/agent.py` 和 AgentEvent。
-- 第 1 步：BridgeApplication 精简为协议转发层。
-- 第 1 步：保持聊天、工具、Token 和错误行为不变。
+- 第 1 步：建立独立 `Agent` 核心，Bridge 只保留协议转发。
+- 第 2 步：把固定两次请求改为真正循环。
+- 第 2 步：加入自然停止、默认 50 轮上限和 `loop_complete`。
+- 第 2 步：加入 Fake 两工具演示和前端轮次显示。
 
 ## 自测题与答案
 
-**问：现在真正的 Agent 在哪里？**
+**问：一轮和一条用户任务是同一件事吗？**
 
-答：`src/jixue/agent.py` 中的 `Agent` 类。
+答：不是。一轮是一次 LLM API 请求；一条任务可能经过很多轮模型请求和工具执行。
 
-**问：BridgeApplication 还是 Agent 吗？**
+**问：Agent Loop 最核心的继续条件是什么？**
 
-答：不是。它只负责把 Electron 命令交给 Agent，再包装 Agent 返回的事件。
+答：本轮模型返回了至少一个 `tool_use`。Agent 执行工具、追加结果，然后进入下一轮。
 
-**问：为什么 Agent 使用异步事件流，而不是最后一次性返回结果？**
+**问：什么时候自然停止？**
 
-答：模型和工具可能运行很久。事件流让 UI 立即显示文字、工具进度和 Token，不需要盯着空白页面等待。
+答：一轮 LLM 响应结束后没有任何 `tool_use`，通常同时会得到 `stop_reason=end_turn`。
 
-**问：这一步完成 Agent Loop 了吗？**
+**问：为什么 UI 不能在 `turn_complete` 时解锁？**
 
-答：没有。它只是把核心放到正确位置。下一步才会把固定两次请求改成带停止条件的循环。
+答：因为这可能只是工具循环中的一轮，Agent 后面还要执行工具和再次请求模型。只有 `loop_complete` 才代表整条任务完成。
+
+**问：`/loop` 为什么需要三轮 LLM 请求？**
+
+答：第一轮请求第一个工具，第二轮看完第一个结果后请求第二个工具，第三轮看完第二个结果后输出最终回答。
+
+**问：第 50 轮仍请求工具时会怎样？**
+
+答：Agent 不执行最后一批工具，关闭对应工具卡片，给出自动停止提示，并以 `max_iterations` 结束整个循环。
