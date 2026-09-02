@@ -31,6 +31,9 @@ from jixue.llm.base import (
 )
 from jixue.tools import ToolContext, ToolRegistry, ToolResult
 
+# 模型连续三次请求不存在或已禁用的工具，通常说明它已经无法自行纠正。
+INVALID_TOOL_LIMIT = 3
+
 
 class AgentEventType(StrEnum):
     """Agent 对外发出的事件种类；UI 只消费事件，不需要知道内部步骤。"""
@@ -156,6 +159,8 @@ class Agent:
             stop_reason = "end_turn"
             iterations = 0
             reached_limit = False
+            invalid_tool_limit_reached = False
+            consecutive_invalid_tools = 0
             cancelled = False
             pending_tool_calls: list[LLMStreamEvent] = []
 
@@ -256,6 +261,13 @@ class Agent:
                         break
 
                     tool_started = perf_counter()
+                    # 只有“工具不存在或被禁用”才累计；合法工具会打断连续计数。
+                    tool_is_invalid = (
+                        not call.tool_error and self._tools.get(call.tool_name) is None
+                    )
+                    consecutive_invalid_tools = (
+                        consecutive_invalid_tools + 1 if tool_is_invalid else 0
+                    )
                     if call.tool_error:
                         result = ToolResult(call.tool_error, is_error=True)
                     else:
@@ -283,11 +295,30 @@ class Agent:
                         metadata=dict(result.metadata),
                     )
 
+                    if consecutive_invalid_tools >= INVALID_TOOL_LIMIT:
+                        invalid_tool_limit_reached = True
+                        stop_reason = "invalid_tool_limit"
+                        # 同一轮中可能还有工具卡片；虽然不再执行，也必须把它们收尾。
+                        for pending in pending_tool_calls:
+                            yield _event(
+                                AgentEventType.TOOL_RESULT,
+                                id=pending.tool_use_id,
+                                name=pending.tool_name,
+                                content="连续异常工具请求过多，工具未执行",
+                                is_error=True,
+                                duration_ms=0,
+                                metadata={},
+                            )
+                        pending_tool_calls.clear()
+                        break
+
                 if cancelled:
                     break
                 if self._cancel_event.is_set():
                     cancelled = True
                     stop_reason = "cancelled"
+                    break
+                if invalid_tool_limit_reached:
                     break
                 # 工具结果必须紧跟模型的 tool_use，并使用相同的 tool_use_id。
                 history = [
@@ -298,6 +329,18 @@ class Agent:
 
             if reached_limit:
                 warning = f"\n\n> Agent 已执行 {self._max_iterations} 轮但仍未完成，已自动停止。"
+                chunks.append(warning)
+                yield _event(
+                    AgentEventType.STREAM_TEXT,
+                    text=warning,
+                    message_id=message_id,
+                )
+
+            if invalid_tool_limit_reached:
+                warning = (
+                    f"\n\n> 模型连续 {INVALID_TOOL_LIMIT} 次请求不存在或已禁用的工具，"
+                    "Agent 已自动停止。"
+                )
                 chunks.append(warning)
                 yield _event(
                     AgentEventType.STREAM_TEXT,
@@ -322,7 +365,11 @@ class Agent:
                 self._conversation.add_assistant(
                     answer,
                     usage=turn_usage,
-                    status=(MessageStatus.FAILED if reached_limit else MessageStatus.COMPLETE),
+                    status=(
+                        MessageStatus.FAILED
+                        if reached_limit or invalid_tool_limit_reached
+                        else MessageStatus.COMPLETE
+                    ),
                 )
             # loop_complete 才表示这一条用户任务彻底结束，UI 应在这里解锁输入框。
             yield _event(
@@ -333,7 +380,7 @@ class Agent:
                 duration_ms=round((perf_counter() - started_at) * 1000),
                 model=self.model_name,
                 message_id=message_id,
-                is_error=reached_limit,
+                is_error=reached_limit or invalid_tool_limit_reached,
                 cancelled=cancelled,
             )
         except LLMClientError as error:
