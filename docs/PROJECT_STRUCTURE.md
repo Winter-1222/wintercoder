@@ -22,7 +22,7 @@ myAgent/
 
 | 文件 | 职责 |
 | --- | --- |
-| `src/jixue/agent.py` | Agent 核心：循环调用 LLM、执行工具、判断停止并响应取消信号 |
+| `src/jixue/agent.py` | Agent 核心：循环调用 LLM、分批并发工具、判断停止并响应取消信号 |
 | `src/jixue/domain/conversation.py` | 普通消息、工具内容块、多轮历史，以及完成/取消消息的 API 前清洗 |
 | `src/jixue/domain/events.py` | Electron 与 Python 之间的一行 JSON 信封 |
 | `src/jixue/llm/base.py` | 霁雪自己的 LLM 接口和流式事件 |

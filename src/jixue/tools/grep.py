@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator
 from os import walk
 from pathlib import Path
@@ -25,6 +26,32 @@ def _iter_files(target: Path) -> Iterator[Path]:
         for name in sorted(files):
             if name not in SKIPPED_NAMES:
                 yield Path(directory) / name
+
+
+def _search(root: Path, target: Path, pattern: str) -> tuple[list[str], int]:
+    """在线程中搜索文件，返回匹配行和实际扫描的文本文件数。"""
+
+    results: list[str] = []
+    files_scanned = 0
+    for file_path in _iter_files(target):
+        try:
+            resolved = file_path.resolve()
+            relative = resolved.relative_to(root)
+            lines = resolved.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeDecodeError, ValueError):
+            # 图片、数据库等非 UTF-8 文件不是搜索失败，安静跳过即可。
+            continue
+        files_scanned += 1
+        for line_number, line in enumerate(lines, start=1):
+            if pattern not in line:
+                continue
+            preview = line.strip()
+            if len(preview) > MAX_LINE_LENGTH:
+                preview = preview[:MAX_LINE_LENGTH] + "……"
+            results.append(f"{relative.as_posix()}:{line_number}: {preview}")
+            if len(results) > MAX_RESULTS:
+                return results, files_scanned
+    return results, files_scanned
 
 
 def create_grep_tool() -> BaseTool:
@@ -53,28 +80,7 @@ def create_grep_tool() -> BaseTool:
         if not target.exists():
             return ToolResult(f"搜索路径不存在：{path}", is_error=True)
 
-        results: list[str] = []
-        files_scanned = 0
-        for file_path in _iter_files(target):
-            try:
-                resolved = file_path.resolve()
-                relative = resolved.relative_to(root)
-                lines = resolved.read_text(encoding="utf-8").splitlines()
-            except (OSError, UnicodeDecodeError, ValueError):
-                # 图片、数据库等非 UTF-8 文件不是搜索失败，安静跳过即可。
-                continue
-            files_scanned += 1
-            for line_number, line in enumerate(lines, start=1):
-                if pattern not in line:
-                    continue
-                preview = line.strip()
-                if len(preview) > MAX_LINE_LENGTH:
-                    preview = preview[:MAX_LINE_LENGTH] + "……"
-                results.append(f"{relative.as_posix()}:{line_number}: {preview}")
-                if len(results) > MAX_RESULTS:
-                    break
-            if len(results) > MAX_RESULTS:
-                break
+        results, files_scanned = await asyncio.to_thread(_search, root, target, pattern)
 
         truncated = len(results) > MAX_RESULTS
         visible = results[:MAX_RESULTS]

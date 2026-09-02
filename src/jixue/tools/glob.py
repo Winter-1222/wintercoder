@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from fnmatch import fnmatchcase
 from os import walk
 from pathlib import Path
@@ -22,6 +23,30 @@ def _matches(path: tuple[str, ...], pattern: tuple[str, ...]) -> bool:
     return bool(path) and fnmatchcase(path[0], pattern[0]) and _matches(path[1:], pattern[1:])
 
 
+def _find_matches(root: Path, pattern: tuple[str, ...]) -> list[str]:
+    """在线程中遍历磁盘，返回数量受限的相对路径。"""
+
+    matches: list[str] = []
+    for directory, names, files in walk(root):
+        # 在遍历阶段剪掉依赖目录，避免先扫描整个 node_modules 再过滤。
+        names[:] = sorted(name for name in names if name not in SKIPPED_NAMES)
+        for name in sorted(files):
+            if name in SKIPPED_NAMES:
+                continue
+            target = Path(directory) / name
+            relative = target.relative_to(root)
+            if not _matches(relative.parts, pattern):
+                continue
+            try:
+                target.resolve().relative_to(root)
+            except ValueError:
+                continue
+            matches.append(relative.as_posix())
+            if len(matches) > MAX_MATCHES:
+                return matches
+    return matches
+
+
 def create_glob_tool() -> BaseTool:
     """创建只返回文件路径、不读取文件内容的 glob 工具。"""
 
@@ -39,26 +64,7 @@ def create_glob_tool() -> BaseTool:
             return ToolResult("拒绝搜索项目目录之外的文件", is_error=True)
 
         root = context.project_root.resolve()
-        matches: list[str] = []
-        for directory, names, files in walk(root):
-            # 在遍历阶段剪掉依赖目录，避免先扫描整个 node_modules 再过滤。
-            names[:] = sorted(name for name in names if name not in SKIPPED_NAMES)
-            for name in sorted(files):
-                if name in SKIPPED_NAMES:
-                    continue
-                target = Path(directory) / name
-                relative = target.relative_to(root)
-                if not _matches(relative.parts, pattern_path.parts):
-                    continue
-                try:
-                    target.resolve().relative_to(root)
-                except ValueError:
-                    continue
-                matches.append(relative.as_posix())
-                if len(matches) > MAX_MATCHES:
-                    break
-            if len(matches) > MAX_MATCHES:
-                break
+        matches = await asyncio.to_thread(_find_matches, root, pattern_path.parts)
 
         truncated = len(matches) > MAX_MATCHES
         visible = matches[:MAX_MATCHES]

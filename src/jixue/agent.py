@@ -252,7 +252,7 @@ class Agent:
                     break
 
                 result_blocks: list[APIContentBlock] = []
-                for call in tool_calls:
+                for batch in _partition_tool_calls(tool_calls, self._tools):
                     if self._cancel_event.is_set():
                         cancelled = True
                         stop_reason = "cancelled"
@@ -260,56 +260,54 @@ class Agent:
                             yield _cancelled_tool_event(pending)
                         break
 
-                    tool_started = perf_counter()
-                    # 只有“工具不存在或被禁用”才累计；合法工具会打断连续计数。
-                    tool_is_invalid = (
-                        not call.tool_error and self._tools.get(call.tool_name) is None
+                    # 一个安全批次可以有多个调用；不安全批次永远只有一个调用。
+                    executions = await asyncio.gather(
+                        *(self._execute_tool_call(call) for call in batch)
                     )
-                    consecutive_invalid_tools = (
-                        consecutive_invalid_tools + 1 if tool_is_invalid else 0
-                    )
-                    if call.tool_error:
-                        result = ToolResult(call.tool_error, is_error=True)
-                    else:
-                        result = await self._tools.execute(
-                            call.tool_name,
-                            self._tool_context,
-                            call.tool_input,
+                    # gather 的返回顺序与输入顺序一致，API 历史不会因为并发而乱序。
+                    for call, (result, duration_ms) in zip(batch, executions, strict=True):
+                        # 只有“工具不存在或被禁用”才累计；合法工具会打断连续计数。
+                        tool_is_invalid = (
+                            not call.tool_error and self._tools.get(call.tool_name) is None
                         )
-
-                    result_blocks.append(
-                        APIToolResultBlock(
-                            call.tool_use_id,
-                            result.content,
-                            result.is_error,
+                        consecutive_invalid_tools = (
+                            consecutive_invalid_tools + 1 if tool_is_invalid else 0
                         )
-                    )
-                    pending_tool_calls.remove(call)
-                    yield _event(
-                        AgentEventType.TOOL_RESULT,
-                        id=call.tool_use_id,
-                        name=call.tool_name,
-                        content=result.content,
-                        is_error=result.is_error,
-                        duration_ms=round((perf_counter() - tool_started) * 1000),
-                        metadata=dict(result.metadata),
-                    )
-
-                    if consecutive_invalid_tools >= INVALID_TOOL_LIMIT:
-                        invalid_tool_limit_reached = True
-                        stop_reason = "invalid_tool_limit"
-                        # 同一轮中可能还有工具卡片；虽然不再执行，也必须把它们收尾。
-                        for pending in pending_tool_calls:
-                            yield _event(
-                                AgentEventType.TOOL_RESULT,
-                                id=pending.tool_use_id,
-                                name=pending.tool_name,
-                                content="连续异常工具请求过多，工具未执行",
-                                is_error=True,
-                                duration_ms=0,
-                                metadata={},
+                        result_blocks.append(
+                            APIToolResultBlock(
+                                call.tool_use_id,
+                                result.content,
+                                result.is_error,
                             )
-                        pending_tool_calls.clear()
+                        )
+                        pending_tool_calls.remove(call)
+                        yield _event(
+                            AgentEventType.TOOL_RESULT,
+                            id=call.tool_use_id,
+                            name=call.tool_name,
+                            content=result.content,
+                            is_error=result.is_error,
+                            duration_ms=duration_ms,
+                            metadata=dict(result.metadata),
+                        )
+
+                        if consecutive_invalid_tools >= INVALID_TOOL_LIMIT:
+                            invalid_tool_limit_reached = True
+                            stop_reason = "invalid_tool_limit"
+                            # 同一轮中可能还有工具卡片；虽然不再执行，也必须把它们收尾。
+                            for pending in pending_tool_calls:
+                                yield _event(
+                                    AgentEventType.TOOL_RESULT,
+                                    id=pending.tool_use_id,
+                                    name=pending.tool_name,
+                                    content="连续异常工具请求过多，工具未执行",
+                                    is_error=True,
+                                    duration_ms=0,
+                                    metadata={},
+                                )
+                            pending_tool_calls.clear()
+                            break
+                    if invalid_tool_limit_reached:
                         break
 
                 if cancelled:
@@ -404,6 +402,24 @@ class Agent:
         finally:
             self._is_running = False
 
+    async def _execute_tool_call(
+        self,
+        call: LLMStreamEvent,
+    ) -> tuple[ToolResult, int]:
+        """执行一个工具调用，并把耗时和普通失败一起返回。"""
+
+        started_at = perf_counter()
+        if call.tool_error:
+            result = ToolResult(call.tool_error, is_error=True)
+        else:
+            result = await self._tools.execute(
+                call.tool_name,
+                self._tool_context,
+                call.tool_input,
+            )
+        duration_ms = round((perf_counter() - started_at) * 1000)
+        return result, duration_ms
+
     def _remember_failed(self, chunks: list[str]) -> None:
         """保留已经显示的半截回复，但标记失败，下一轮不会发给 LLM。"""
 
@@ -412,6 +428,34 @@ class Agent:
                 "".join(chunks),
                 status=MessageStatus.FAILED,
             )
+
+
+def _partition_tool_calls(
+    calls: Sequence[LLMStreamEvent],
+    tools: ToolRegistry,
+) -> list[list[LLMStreamEvent]]:
+    """把连续安全调用放在一起，不安全调用各自成为一个串行批次。"""
+
+    batches: list[list[LLMStreamEvent]] = []
+    safe_batch: list[LLMStreamEvent] = []
+    for call in calls:
+        tool = tools.get(call.tool_name)
+        is_safe = (
+            not call.tool_error
+            and tool is not None
+            and tool.is_concurrency_safe(call.tool_input)
+        )
+        if is_safe:
+            safe_batch.append(call)
+            continue
+        if safe_batch:
+            batches.append(safe_batch)
+            safe_batch = []
+        # 工具不存在、参数 JSON 损坏和声明不安全的调用都采用保守串行。
+        batches.append([call])
+    if safe_batch:
+        batches.append(safe_batch)
+    return batches
 
 
 def _cancelled_tool_event(call: LLMStreamEvent) -> AgentEvent:

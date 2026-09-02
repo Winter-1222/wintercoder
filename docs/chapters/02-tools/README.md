@@ -101,7 +101,7 @@ while True:
         把 tool_use 和 tool_result 加入历史
 ```
 
-注意：现在多个工具仍由 `for` 依次执行。`is_concurrency_safe()` 已经提供判断信息，但真正的并发分批是下一小步。
+Agent 现在会读取 `is_concurrency_safe()`：连续安全调用组成一个并发批次，不安全调用各自单独执行。分批算法和事件顺序放在第三章讲。
 
 ## is_concurrency_safe 怎样判断
 
@@ -205,7 +205,8 @@ npm run test:electron
 - 支持流式 `tool_use` JSON 拼接和错误降级。
 - 支持工具结果回传、UI 卡片和 Agent Loop。
 - 新增 `glob` 和 `grep`，并在真实 Bridge 启动时注册。
-- 三个只读工具声明可以安全并发，为下一步分批执行做准备。
+- 三个只读工具声明可以安全并发。
+- 文件扫描通过 `asyncio.to_thread()` 进入工作线程，多个安全调用可以真正重叠。
 
 ## 自测题与答案
 

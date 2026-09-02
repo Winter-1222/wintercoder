@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from jixue.tools.base import BaseTool, ToolContext, ToolInput, ToolResult
 
 
@@ -25,7 +27,8 @@ def create_read_file_tool() -> BaseTool:
         if not target.is_file():
             return ToolResult(f"文件不存在：{path}", is_error=True)
 
-        content = target.read_text(encoding="utf-8")
+        # 文件读取是同步操作，放进工作线程后多个只读工具才能真正重叠执行。
+        content = await asyncio.to_thread(target.read_text, encoding="utf-8")
         return ToolResult(
             content,
             metadata={"path": str(target), "characters": len(content)},
