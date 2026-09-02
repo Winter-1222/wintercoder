@@ -50,8 +50,8 @@ class ToolRegistry:
             return ToolResult(f"工具不存在或已禁用：{name}", is_error=True)
         return await tool.execute(context, tool_input)
 
-    def to_api_format(self) -> list[dict[str, object]]:
-        """只输出通用 JSON；Anthropic SDK 类型仍留在适配器内部。"""
+    def to_api_format(self, *, read_only_only: bool = False) -> list[dict[str, object]]:
+        """输出通用 JSON；Plan 模式可以只导出只读工具。"""
 
         return [
             {
@@ -60,4 +60,5 @@ class ToolRegistry:
                 "input_schema": dict(tool.input_schema()),
             }
             for tool in self.enabled_tools()
+            if not read_only_only or tool.is_read_only()
         ]

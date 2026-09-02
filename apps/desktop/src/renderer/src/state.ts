@@ -1,6 +1,6 @@
 /** React 聊天状态；reducer 只做“旧状态 + 事件 = 新状态”。 */
 
-import type { BridgeState } from '../../shared/protocol'
+import type { AgentMode, BridgeState } from '../../shared/protocol'
 
 export interface UiMessage {
   id: string
@@ -22,12 +22,14 @@ export interface ChatState {
   durationMs: number
   iteration: number
   model: string
+  mode: AgentMode
   usage: { inputTokens: number; outputTokens: number }
 }
 
 export type ChatAction =
   | { type: 'bridge_changed'; state: BridgeState }
   | { type: 'model_changed'; model: string }
+  | { type: 'mode_changed'; mode: AgentMode }
   | { type: 'request_started'; requestId: string; text: string; startedAt: number }
   | { type: 'cancel_requested'; requestId: string }
   | { type: 'cancel_failed'; requestId: string }
@@ -69,6 +71,7 @@ export const initialChatState: ChatState = {
   durationMs: 0,
   iteration: 0,
   model: 'fake-jixue',
+  mode: 'do',
   usage: { inputTokens: 0, outputTokens: 0 }
 }
 
@@ -90,6 +93,9 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     case 'model_changed':
       // 握手成功后，把后端实际使用的模型名显示到状态栏。
       return { ...state, model: action.model }
+    case 'mode_changed':
+      // 后端确认后再切换高亮，页面状态不会领先于 Agent 的真实模式。
+      return { ...state, mode: action.mode }
     case 'request_started':
       // 先放入用户消息和空的 AI 消息，后续流式文字会追加到这个空位置。
       return {

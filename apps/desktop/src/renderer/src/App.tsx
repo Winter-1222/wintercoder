@@ -4,7 +4,7 @@ import { useEffect, useReducer, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
-import type { BridgeEnvelope } from '../../shared/protocol'
+import type { AgentMode, BridgeEnvelope } from '../../shared/protocol'
 import { chatReducer, initialChatState, type UiMessage } from './state'
 
 function MessageView({ message }: { message: UiMessage }): React.JSX.Element {
@@ -108,6 +108,11 @@ export default function App(): React.JSX.Element {
   function handleEvent(event: BridgeEnvelope): void {
     if (event.type === 'bridge.ready') {
       dispatch({ type: 'model_changed', model: text(event.payload.model, 'fake-jixue') })
+      const mode = text(event.payload.mode)
+      if (mode === 'plan' || mode === 'do') dispatch({ type: 'mode_changed', mode })
+    } else if (event.type === 'mode.changed') {
+      const mode = text(event.payload.mode)
+      if (mode === 'plan' || mode === 'do') dispatch({ type: 'mode_changed', mode })
     } else if (event.type === 'stream_text') {
       dispatch({
         type: 'text_received',
@@ -197,6 +202,16 @@ export default function App(): React.JSX.Element {
       dispatch({ type: 'cancel_failed', requestId })
     }
   }
+
+  async function changeMode(mode: AgentMode): Promise<void> {
+    if (state.activeRequestId || state.mode === mode) return
+    try {
+      await window.jixue.setAgentMode(mode)
+    } catch (error) {
+      console.error('切换 Agent 模式失败', error)
+    }
+  }
+
   return (
     <main className="app-shell">
       <aside className="sidebar">
@@ -252,18 +267,38 @@ export default function App(): React.JSX.Element {
               rows={2}
             />
             <div className="composer-toolbar">
-              <div className="run-status">
-                <span className="model-chip">{state.model}</span>
-                <span>
-                  {state.isCancelling
-                    ? '正在停止'
-                    : state.activeRequestId
-                      ? `正在第 ${state.iteration + 1} 轮`
-                      : `共 ${state.iteration} 轮`}
-                </span>
-                <span>输入 {state.usage.inputTokens}</span>
-                <span>输出 {state.usage.outputTokens}</span>
-                <span>{elapsed.toFixed(1)} 秒</span>
+              <div className="composer-left">
+                <div className="mode-switch" aria-label="Agent 模式">
+                  <button
+                    className={state.mode === 'plan' ? 'active' : ''}
+                    onClick={() => void changeMode('plan')}
+                    disabled={!!state.activeRequestId}
+                    title="只调查并制定计划，不修改文件"
+                  >
+                    Plan
+                  </button>
+                  <button
+                    className={state.mode === 'do' ? 'active' : ''}
+                    onClick={() => void changeMode('do')}
+                    disabled={!!state.activeRequestId}
+                    title="允许 Agent 使用全部已启用工具"
+                  >
+                    Do
+                  </button>
+                </div>
+                <div className="run-status">
+                  <span className="model-chip">{state.model}</span>
+                  <span>
+                    {state.isCancelling
+                      ? '正在停止'
+                      : state.activeRequestId
+                        ? `正在第 ${state.iteration + 1} 轮`
+                        : `共 ${state.iteration} 轮`}
+                  </span>
+                  <span>输入 {state.usage.inputTokens}</span>
+                  <span>输出 {state.usage.outputTokens}</span>
+                  <span>{elapsed.toFixed(1)} 秒</span>
+                </div>
               </div>
               {state.activeRequestId ? (
                 <button
@@ -280,7 +315,10 @@ export default function App(): React.JSX.Element {
               )}
             </div>
           </div>
-          <small className="composer-note">Enter 发送 · Shift + Enter 换行</small>
+          <small className="composer-note">
+            {state.mode === 'plan' ? 'Plan：只调查并给出计划' : 'Do：可执行已启用工具'} ·
+            Enter 发送 · Shift + Enter 换行
+          </small>
         </footer>
       </section>
     </main>

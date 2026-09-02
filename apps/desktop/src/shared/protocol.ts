@@ -3,6 +3,7 @@
 export const PROTOCOL_VERSION = 1
 
 export type BridgeStatus = 'starting' | 'ready' | 'offline' | 'error'
+export type AgentMode = 'plan' | 'do'
 
 export interface BridgeState {
   status: BridgeStatus
@@ -21,6 +22,7 @@ export interface BridgeEnvelope {
 export interface JixueDesktopApi {
   sendChat: (requestId: string, text: string) => Promise<void>
   cancelChat: (requestId: string) => Promise<void>
+  setAgentMode: (mode: AgentMode) => Promise<void>
   getBridgeState: () => Promise<BridgeState>
   onBridgeEvent: (listener: (event: BridgeEnvelope) => void) => () => void
   onBridgeState: (listener: (state: BridgeState) => void) => () => void

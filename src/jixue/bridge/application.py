@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import AsyncIterator
 
 from jixue import __version__
-from jixue.agent import Agent
+from jixue.agent import Agent, AgentMode
 from jixue.domain.conversation import Message
 from jixue.domain.events import Envelope
 
@@ -36,6 +36,7 @@ class BridgeApplication:
                     "protocol_version": command.version,
                     "backend_version": __version__,
                     "model": self._agent.model_name,
+                    "mode": self._agent.mode.value,
                     "capabilities": [
                         "stream_text",
                         "tool_use",
@@ -44,9 +45,38 @@ class BridgeApplication:
                         "turn_complete",
                         "loop_complete",
                         "cancel",
+                        "mode",
                     ],
                 },
             )
+        elif command.type == "agent.mode":
+            raw_mode = command.payload.get("mode")
+            try:
+                mode = AgentMode(raw_mode) if isinstance(raw_mode, str) else None
+            except ValueError:
+                mode = None
+            if mode is None:
+                yield self._error(
+                    command.request_id,
+                    "invalid_mode",
+                    "模式只能是 plan 或 do",
+                    scope="mode",
+                )
+            elif self._active_request_id is not None:
+                yield self._error(
+                    command.request_id,
+                    "mode_busy",
+                    "任务运行中不能切换模式",
+                    scope="mode",
+                )
+            else:
+                self._agent.set_mode(mode)
+                yield Envelope.create(
+                    "mode.changed",
+                    command.request_id,
+                    0,
+                    {"mode": mode.value},
+                )
         elif command.type == "chat.send":
             text = command.payload.get("text")
             user_text = text if isinstance(text, str) else ""

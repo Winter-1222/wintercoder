@@ -35,6 +35,13 @@ from jixue.tools import ToolContext, ToolRegistry, ToolResult
 INVALID_TOOL_LIMIT = 3
 
 
+class AgentMode(StrEnum):
+    """Agent 的工作方式：Do 可以执行全部工具，Plan 只能调查。"""
+
+    DO = "do"
+    PLAN = "plan"
+
+
 class AgentEventType(StrEnum):
     """Agent 对外发出的事件种类；UI 只消费事件，不需要知道内部步骤。"""
 
@@ -75,6 +82,7 @@ class Agent:
         self._max_iterations = max_iterations
         self._cancel_event = asyncio.Event()
         self._is_running = False
+        self._mode = AgentMode.DO
 
     @property
     def model_name(self) -> str:
@@ -83,6 +91,17 @@ class Agent:
     @property
     def messages(self) -> tuple[Message, ...]:
         return self._conversation.messages
+
+    @property
+    def mode(self) -> AgentMode:
+        return self._mode
+
+    def set_mode(self, mode: AgentMode) -> None:
+        """切换工作模式；任务运行中不允许改变本轮规则。"""
+
+        if self._is_running:
+            raise RuntimeError("任务运行中不能切换模式")
+        self._mode = mode
 
     def cancel(self) -> bool:
         """请求停止当前任务；返回 False 表示此刻没有正在运行的任务。"""
@@ -139,10 +158,15 @@ class Agent:
         message_id = f"msg_{uuid4().hex}"
         chunks: list[str] = []
         turn_usage = Usage()
+        mode = self._mode
         self._conversation.add_user(user_text.strip())
 
         try:
-            history = self._conversation.to_api_format()
+            history = _history_for_mode(
+                self._conversation.to_api_format(),
+                mode,
+                self._tool_context.project_root,
+            )
         except ConversationError as error:
             yield _event(
                 AgentEventType.ERROR,
@@ -155,7 +179,10 @@ class Agent:
             return
 
         try:
-            tool_definitions = self._tools.to_api_format()
+            # Plan 模式只把只读工具告诉模型，这是第一层保护。
+            tool_definitions = self._tools.to_api_format(
+                read_only_only=mode is AgentMode.PLAN
+            )
             stop_reason = "end_turn"
             iterations = 0
             reached_limit = False
@@ -262,7 +289,7 @@ class Agent:
 
                     # 一个安全批次可以有多个调用；不安全批次永远只有一个调用。
                     executions = await asyncio.gather(
-                        *(self._execute_tool_call(call) for call in batch)
+                        *(self._execute_tool_call(call, mode) for call in batch)
                     )
                     # gather 的返回顺序与输入顺序一致，API 历史不会因为并发而乱序。
                     for call, (result, duration_ms) in zip(batch, executions, strict=True):
@@ -380,6 +407,7 @@ class Agent:
                 message_id=message_id,
                 is_error=reached_limit or invalid_tool_limit_reached,
                 cancelled=cancelled,
+                mode=mode.value,
             )
         except LLMClientError as error:
             self._remember_failed(chunks)
@@ -405,12 +433,17 @@ class Agent:
     async def _execute_tool_call(
         self,
         call: LLMStreamEvent,
+        mode: AgentMode,
     ) -> tuple[ToolResult, int]:
         """执行一个工具调用，并把耗时和普通失败一起返回。"""
 
         started_at = perf_counter()
+        tool = self._tools.get(call.tool_name)
         if call.tool_error:
             result = ToolResult(call.tool_error, is_error=True)
+        elif mode is AgentMode.PLAN and tool is not None and not tool.is_read_only():
+            # 即使模型猜出了未展示的写工具名，也会在真正执行前被第二层保护拦住。
+            result = ToolResult("Plan 模式只允许使用只读工具", is_error=True)
         else:
             result = await self._tools.execute(
                 call.tool_name,
@@ -428,6 +461,34 @@ class Agent:
                 "".join(chunks),
                 status=MessageStatus.FAILED,
             )
+
+
+def _history_for_mode(
+    history: Sequence[APIMessage],
+    mode: AgentMode,
+    project_root: Path,
+) -> list[APIMessage]:
+    """Plan 指令只加入本次 API 历史，不污染用户真正保存的消息。"""
+
+    result = list(history)
+    if mode is AgentMode.DO:
+        return result
+
+    reminder = (
+        "<system-reminder>\n"
+        "当前处于 Plan 模式。请先使用只读工具调查现状，再给出清晰的执行计划；"
+        "不要写入、编辑或删除文件，也不要执行会改变环境的操作。"
+        "最终只输出计划，等待用户切换到 Do 模式。\n"
+        f"当前工作目录：{project_root}\n"
+        "</system-reminder>"
+    )
+    # 当前用户问题一定是最后一条字符串 user 消息；倒序查找让函数更耐受工具块历史。
+    for index in range(len(result) - 1, -1, -1):
+        message = result[index]
+        if message.role == "user" and isinstance(message.content, str):
+            result[index] = APIMessage("user", f"{message.content}\n\n{reminder}")
+            break
+    return result
 
 
 def _partition_tool_calls(

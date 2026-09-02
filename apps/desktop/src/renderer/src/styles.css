@@ -234,6 +234,37 @@ button, textarea { font: inherit; }
   justify-content: space-between;
 }
 
+.composer-left,
+.mode-switch {
+  display: flex;
+  align-items: center;
+}
+
+.composer-left { min-width: 0; gap: 10px; }
+
+.mode-switch {
+  padding: 2px;
+  border: 1px solid #deded9;
+  border-radius: 8px;
+  background: #f4f4f1;
+}
+
+.composer .mode-switch button {
+  width: auto;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 6px;
+  background: transparent;
+  color: #777770;
+  font-size: 11px;
+}
+
+.composer .mode-switch button.active {
+  background: white;
+  color: #282826;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 10%);
+}
+
 .run-status {
   display: flex;
   gap: 12px;

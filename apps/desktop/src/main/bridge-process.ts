@@ -7,6 +7,7 @@ import { delimiter, resolve } from 'node:path'
 import {
   PROTOCOL_VERSION,
   isBridgeEnvelope,
+  type AgentMode,
   type BridgeEnvelope,
   type BridgeState
 } from '../shared/protocol'
@@ -87,6 +88,11 @@ export class PythonBridge {
     if (this.state.status !== 'ready') throw new Error('Python Bridge 尚未就绪')
     // 取消命令有自己的编号，payload 指向真正需要停止的聊天请求。
     this.write('chat.cancel', `cancel_${randomUUID()}`, { target_request_id: requestId })
+  }
+
+  setAgentMode(mode: AgentMode): void {
+    if (this.state.status !== 'ready') throw new Error('Python Bridge 尚未就绪')
+    this.write('agent.mode', 'mode_' + randomUUID(), { mode })
   }
 
   stop(): void {

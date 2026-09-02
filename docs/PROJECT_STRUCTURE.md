@@ -22,7 +22,7 @@ myAgent/
 
 | 文件 | 职责 |
 | --- | --- |
-| `src/jixue/agent.py` | Agent 核心：循环调用 LLM、分批并发工具、判断停止并响应取消信号 |
+| `src/jixue/agent.py` | Agent 核心：保存 Plan/Do 模式、循环调用 LLM、限制工具、分批并发并判断停止 |
 | `src/jixue/domain/conversation.py` | 普通消息、工具内容块、多轮历史，以及完成/取消消息的 API 前清洗 |
 | `src/jixue/domain/events.py` | Electron 与 Python 之间的一行 JSON 信封 |
 | `src/jixue/llm/base.py` | 霁雪自己的 LLM 接口和流式事件 |
@@ -30,11 +30,11 @@ myAgent/
 | `src/jixue/llm/config.py` | 从 `models.yaml` 和环境中生成四字段配置 |
 | `src/jixue/llm/adapters/anthropic_client.py` | 唯一接触 Anthropic SDK，解析流并转换工具内容块 |
 | `src/jixue/bridge/bootstrap.py` | 读取项目根目录 `.env`，选择 Fake 或真实 LLM |
-| `src/jixue/bridge/application.py` | 转发 chat.send/chat.cancel，并为 Agent 事件包装信封 |
+| `src/jixue/bridge/application.py` | 转发模式、聊天和取消命令，并为 Agent 事件包装信封 |
 | `src/jixue/bridge/server.py` | 从 stdin 收 JSON，从 stdout 发 JSON |
 | `src/jixue/bridge/__main__.py` | 让 `python -m jixue.bridge` 能启动 |
 | `src/jixue/tools/base.py` | 工具合同、ToolResult 和通用 BaseTool |
-| `src/jixue/tools/registry.py` | 注册、启用、禁用、导出定义和按名称执行工具 |
+| `src/jixue/tools/registry.py` | 注册、启用、禁用、按名称执行工具，并可只导出只读工具定义 |
 | `src/jixue/tools/read_file.py` | 读取项目内 UTF-8 文本文件 |
 | `src/jixue/tools/glob.py` | 按 glob 模式查找项目内文件路径 |
 | `src/jixue/tools/grep.py` | 在项目文本文件中搜索字面内容并返回行号 |
@@ -46,13 +46,13 @@ myAgent/
 
 | 文件 | 职责 |
 | --- | --- |
-| `apps/desktop/src/main/index.ts` | 创建窗口、校验聊天/取消 IPC，并启动或关闭 Python |
-| `apps/desktop/src/main/bridge-process.ts` | 启动 Conda 子进程，发送聊天/取消命令并处理 NDJSON |
-| `apps/desktop/src/preload/index.ts` | 只向网页暴露安全的聊天、取消和事件订阅接口 |
+| `apps/desktop/src/main/index.ts` | 创建窗口、校验模式/聊天/取消 IPC，并启动或关闭 Python |
+| `apps/desktop/src/main/bridge-process.ts` | 启动 Conda 子进程，发送模式/聊天/取消命令并处理 NDJSON |
+| `apps/desktop/src/preload/index.ts` | 只向网页暴露安全的模式、聊天、取消和事件订阅接口 |
 | `apps/desktop/src/shared/protocol.ts` | 前后端共用的事件信封和桌面 API 类型 |
-| `apps/desktop/src/renderer/src/App.tsx` | 聊天页面，接收循环事件并在运行时展示停止按钮 |
-| `apps/desktop/src/renderer/src/state.ts` | reducer：更新工具、轮次、正在停止和已停止状态 |
-| `apps/desktop/src/renderer/src/styles.css` | Codex 风格的聊天、工具卡片和停止按钮样式 |
+| `apps/desktop/src/renderer/src/App.tsx` | 聊天页面，接收循环事件并展示 Plan/Do、发送和停止按钮 |
+| `apps/desktop/src/renderer/src/state.ts` | reducer：更新模式、工具、轮次、正在停止和已停止状态 |
+| `apps/desktop/src/renderer/src/styles.css` | Codex 风格的聊天、模式切换、工具卡片和停止按钮样式 |
 | `apps/desktop/src/renderer/src/main.tsx` | React 页面入口 |
 
 其余 `electron.vite.config.ts`、`tsconfig.json` 和各级 `package.json` 是构建配置，不参与一条消息的业务处理。
