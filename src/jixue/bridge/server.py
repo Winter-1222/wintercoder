@@ -11,7 +11,12 @@ from jixue.agent import Agent
 from jixue.bridge.application import BridgeApplication
 from jixue.bridge.bootstrap import BridgeBootstrapError, create_runtime_llm
 from jixue.domain.events import Envelope, ProtocolError
-from jixue.tools import ToolRegistry, create_read_file_tool
+from jixue.tools import (
+    ToolRegistry,
+    create_glob_tool,
+    create_grep_tool,
+    create_read_file_tool,
+)
 
 MAX_LINE_BYTES = 1024 * 1024
 
@@ -89,6 +94,8 @@ def main() -> None:
 
     tools = ToolRegistry()
     tools.register(create_read_file_tool())
+    tools.register(create_glob_tool())
+    tools.register(create_grep_tool())
     agent = Agent(llm, tools=tools)
     server = BridgeServer(
         BridgeApplication(agent),

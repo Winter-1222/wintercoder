@@ -35,7 +35,9 @@ myAgent/
 | `src/jixue/bridge/__main__.py` | 让 `python -m jixue.bridge` 能启动 |
 | `src/jixue/tools/base.py` | 工具合同、ToolResult 和通用 BaseTool |
 | `src/jixue/tools/registry.py` | 注册、启用、禁用、导出定义和按名称执行工具 |
-| `src/jixue/tools/read_file.py` | 第一个只读文件工具工厂 |
+| `src/jixue/tools/read_file.py` | 读取项目内 UTF-8 文本文件 |
+| `src/jixue/tools/glob.py` | 按 glob 模式查找项目内文件路径 |
+| `src/jixue/tools/grep.py` | 在项目文本文件中搜索字面内容并返回行号 |
 | `src/jixue/tools/__init__.py` | 工具层公开导入入口 |
 
 `agent.py` 是现在最先阅读的核心；`domain` 不知道 Electron 和 Anthropic；`adapters` 藏住外部 SDK；`bridge` 只负责连接桌面端。
