@@ -83,6 +83,12 @@ export class PythonBridge {
     this.write('chat.send', requestId, { text })
   }
 
+  cancelChat(requestId: string): void {
+    if (this.state.status !== 'ready') throw new Error('Python Bridge 尚未就绪')
+    // 取消命令有自己的编号，payload 指向真正需要停止的聊天请求。
+    this.write('chat.cancel', `cancel_${randomUUID()}`, { target_request_id: requestId })
+  }
+
   stop(): void {
     this.stopping = true
     const child = this.child

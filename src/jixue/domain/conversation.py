@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Literal
@@ -117,6 +117,15 @@ class ConversationManager:
                 usage=usage or Usage(),
             )
         )
+
+    def cancel_last_user(self) -> None:
+        """把本轮最后一条用户消息标记为取消，保留记录但不再发送给 LLM。"""
+
+        if self._messages and self._messages[-1].role == "user":
+            self._messages[-1] = replace(
+                self._messages[-1],
+                status=MessageStatus.CANCELLED,
+            )
 
     def to_api_format(self) -> list[APIMessage]:
         """过滤未完成消息，并合并相邻的相同角色。"""

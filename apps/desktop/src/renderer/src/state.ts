@@ -7,7 +7,7 @@ export interface UiMessage {
   requestId: string
   role: 'user' | 'assistant' | 'tool'
   content: string
-  status: 'streaming' | 'complete' | 'failed'
+  status: 'streaming' | 'complete' | 'failed' | 'cancelled'
   name?: string
   input?: string
   durationMs?: number
@@ -17,6 +17,7 @@ export interface ChatState {
   bridge: BridgeState
   messages: UiMessage[]
   activeRequestId: string | null
+  isCancelling: boolean
   startedAt: number | null
   durationMs: number
   iteration: number
@@ -28,6 +29,8 @@ export type ChatAction =
   | { type: 'bridge_changed'; state: BridgeState }
   | { type: 'model_changed'; model: string }
   | { type: 'request_started'; requestId: string; text: string; startedAt: number }
+  | { type: 'cancel_requested'; requestId: string }
+  | { type: 'cancel_failed'; requestId: string }
   | { type: 'text_received'; requestId: string; messageId: string; text: string }
   | {
       type: 'tool_received'
@@ -53,6 +56,7 @@ export type ChatAction =
       durationMs: number
       model: string
       isError: boolean
+      cancelled: boolean
     }
   | { type: 'request_failed'; requestId: string; message: string }
 
@@ -60,6 +64,7 @@ export const initialChatState: ChatState = {
   bridge: { status: 'starting', detail: '正在连接 Python Bridge' },
   messages: [],
   activeRequestId: null,
+  isCancelling: false,
   startedAt: null,
   durationMs: 0,
   iteration: 0,
@@ -90,6 +95,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return {
         ...state,
         activeRequestId: action.requestId,
+        isCancelling: false,
         startedAt: action.startedAt,
         durationMs: 0,
         iteration: 0,
@@ -111,6 +117,14 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           }
         ]
       }
+    case 'cancel_requested':
+      // 点击停止后先禁用按钮；真正解锁仍要等待后端的 loop_complete。
+      if (state.activeRequestId !== action.requestId) return state
+      return { ...state, isCancelling: true }
+    case 'cancel_failed':
+      // 取消命令没能发出时恢复停止按钮，当前任务仍继续运行。
+      if (state.activeRequestId !== action.requestId) return state
+      return { ...state, isCancelling: false }
     case 'text_received':
       // 每个 stream_text 只是一小段，必须接到已有内容末尾，不能覆盖前文。
       return {
@@ -169,16 +183,18 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return {
         ...state,
         activeRequestId: null,
+        isCancelling: false,
         startedAt: null,
         durationMs: action.durationMs,
         model: action.model,
         messages: updateAssistant(state.messages, action.requestId, (message) => ({
           ...message,
-          status: action.isError ? 'failed' : 'complete'
+          status: action.cancelled ? 'cancelled' : action.isError ? 'failed' : 'complete'
         })).filter(
           (message) =>
             message.requestId !== action.requestId ||
             message.role !== 'assistant' ||
+            action.cancelled ||
             message.content.length > 0
         )
       }
@@ -187,6 +203,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return {
         ...state,
         activeRequestId: null,
+        isCancelling: false,
         startedAt: null,
         messages: updateAssistant(state.messages, action.requestId, (message) => ({
           ...message,

@@ -18,6 +18,7 @@ class BridgeApplication:
         self._agent = agent
         # 同一会话一次只处理一条消息，避免两条历史交叉写入。
         self._chat_lock = asyncio.Lock()
+        self._active_request_id: str | None = None
 
     @property
     def messages(self) -> tuple[Message, ...]:
@@ -42,6 +43,7 @@ class BridgeApplication:
                         "usage",
                         "turn_complete",
                         "loop_complete",
+                        "cancel",
                     ],
                 },
             )
@@ -49,15 +51,32 @@ class BridgeApplication:
             text = command.payload.get("text")
             user_text = text if isinstance(text, str) else ""
             async with self._chat_lock:
-                sequence = 0
-                async for event in self._agent.run(user_text):
-                    yield Envelope.create(
-                        event.type.value,
-                        command.request_id,
-                        sequence,
-                        event.payload,
-                    )
-                    sequence += 1
+                self._active_request_id = command.request_id
+                try:
+                    sequence = 0
+                    async for event in self._agent.run(user_text):
+                        yield Envelope.create(
+                            event.type.value,
+                            command.request_id,
+                            sequence,
+                            event.payload,
+                        )
+                        sequence += 1
+                finally:
+                    self._active_request_id = None
+        elif command.type == "chat.cancel":
+            target = command.payload.get("target_request_id")
+            target_request_id = target if isinstance(target, str) else ""
+            accepted = target_request_id == self._active_request_id and self._agent.cancel()
+            yield Envelope.create(
+                "cancel.accepted",
+                command.request_id,
+                0,
+                {
+                    "target_request_id": target_request_id,
+                    "accepted": accepted,
+                },
+            )
         else:
             yield self._error(
                 command.request_id,

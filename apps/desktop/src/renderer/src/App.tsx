@@ -40,7 +40,15 @@ function MessageView({ message }: { message: UiMessage }): React.JSX.Element {
       <div>
         <header>
           <strong>霁雪</strong>
-          <small>{message.status === 'failed' ? '回复中断' : complete ? '已完成' : '正在回复'}</small>
+          <small>
+            {message.status === 'cancelled'
+              ? '已停止'
+              : message.status === 'failed'
+                ? '回复中断'
+                : complete
+                  ? '已完成'
+                  : '正在回复'}
+          </small>
         </header>
         <div className="message-body">
           {complete ? (
@@ -145,7 +153,8 @@ export default function App(): React.JSX.Element {
         requestId: event.request_id,
         durationMs: number(event.payload.duration_ms),
         model: text(event.payload.model, state.model),
-        isError: event.payload.is_error === true
+        isError: event.payload.is_error === true,
+        cancelled: event.payload.cancelled === true
       })
     } else if (event.type === 'error') {
       dispatch({
@@ -177,6 +186,17 @@ export default function App(): React.JSX.Element {
     }
   }
 
+  async function cancelMessage(): Promise<void> {
+    const requestId = state.activeRequestId
+    if (!requestId || state.isCancelling) return
+    dispatch({ type: 'cancel_requested', requestId })
+    try {
+      await window.jixue.cancelChat(requestId)
+    } catch (error) {
+      console.error('发送取消命令失败', error)
+      dispatch({ type: 'cancel_failed', requestId })
+    }
+  }
   return (
     <main className="app-shell">
       <aside className="sidebar">
@@ -235,15 +255,29 @@ export default function App(): React.JSX.Element {
               <div className="run-status">
                 <span className="model-chip">{state.model}</span>
                 <span>
-                  {state.activeRequestId
-                    ? `正在第 ${state.iteration + 1} 轮`
-                    : `共 ${state.iteration} 轮`}
+                  {state.isCancelling
+                    ? '正在停止'
+                    : state.activeRequestId
+                      ? `正在第 ${state.iteration + 1} 轮`
+                      : `共 ${state.iteration} 轮`}
                 </span>
                 <span>输入 {state.usage.inputTokens}</span>
                 <span>输出 {state.usage.outputTokens}</span>
                 <span>{elapsed.toFixed(1)} 秒</span>
               </div>
-              <button aria-label="发送" onClick={() => void sendMessage()} disabled={!canSend}>↑</button>
+              {state.activeRequestId ? (
+                <button
+                  className="cancel-button"
+                  aria-label="停止"
+                  title="停止当前任务"
+                  onClick={() => void cancelMessage()}
+                  disabled={state.isCancelling}
+                >
+                  {state.isCancelling ? '…' : '■'}
+                </button>
+              ) : (
+                <button aria-label="发送" onClick={() => void sendMessage()} disabled={!canSend}>↑</button>
+              )}
             </div>
           </div>
           <small className="composer-note">Enter 发送 · Shift + Enter 换行</small>

@@ -20,6 +20,7 @@ export interface BridgeEnvelope {
 
 export interface JixueDesktopApi {
   sendChat: (requestId: string, text: string) => Promise<void>
+  cancelChat: (requestId: string) => Promise<void>
   getBridgeState: () => Promise<BridgeState>
   onBridgeEvent: (listener: (event: BridgeEnvelope) => void) => () => void
   onBridgeState: (listener: (state: BridgeState) => void) => () => void

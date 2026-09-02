@@ -62,6 +62,13 @@ function registerIpc(): void {
     }
     bridge?.sendChat(requestId, text)
   })
+  ipcMain.handle('jixue:cancel-chat', (event, requestId: unknown) => {
+    if (!validSender(event)) throw new Error('拒绝未知窗口')
+    if (typeof requestId !== 'string' || !requestId.startsWith('req_')) {
+      throw new Error('requestId 无效')
+    }
+    bridge?.cancelChat(requestId)
+  })
 }
 
 app.whenReady().then(() => {

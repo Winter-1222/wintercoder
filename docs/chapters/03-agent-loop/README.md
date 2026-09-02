@@ -2,7 +2,7 @@
 
 本章的目标是让霁雪不只“调用一次工具就停下”，而是可以反复执行：模型决定用工具，Agent 执行工具，把结果交还模型，直到模型给出最终回答。
 
-本步骤已经完成最小循环、自然停止、50 轮上限和界面轮次展示。用户取消、异常工具连续检测、并发执行和 Plan Mode 还没有实现。
+目前已经完成最小循环、自然停止、50 轮上限、界面轮次展示和用户取消。异常工具连续检测、并发执行和 Plan Mode 还没有实现。
 
 ## 当前成果
 
@@ -12,21 +12,23 @@
 - 模型不再请求工具时，循环自然结束。
 - 默认最多执行 50 轮，防止模型无限循环。
 - `turn_complete` 表示一轮 LLM 结束，`loop_complete` 表示整条用户任务结束。
-- Fake 模式新增 `/loop 文件1 文件2`，无需 API Key 就能观察三轮循环。
-- 页面状态栏会显示当前进行到第几轮。
+- 运行中可以点击停止按钮；取消只结束当前任务，应用仍可继续对话。
+- 页面状态栏会显示当前轮次、正在停止和已停止状态。
+- 取消的消息保留在 UI，但不会进入下一次 LLM 上下文。
 
 ## 推荐阅读顺序
 
 只按下面顺序看，不需要一开始读完整个项目：
 
-1. `src/jixue/agent.py`：重点看 `Agent.run()` 中的 `for iteration`。
-2. `src/jixue/llm/fake.py`：看 `/loop` 怎样确定性地请求两次工具。
-3. `src/jixue/tools/registry.py`：复习 Agent 怎样按名称执行工具。
-4. `src/jixue/bridge/application.py`：看 AgentEvent 怎样被套上通信信封。
-5. `apps/desktop/src/renderer/src/App.tsx`：看页面怎样分发事件。
-6. `apps/desktop/src/renderer/src/state.ts`：看 reducer 怎样记录轮次和完成状态。
+1. `src/jixue/agent.py`：先看 `Agent.run()` 的循环，再看 `cancel()` 和 `_stream_llm()`。
+2. `src/jixue/tools/registry.py`：复习 Agent 怎样按名称执行工具。
+3. `src/jixue/bridge/application.py`：看 `chat.send` 和 `chat.cancel` 怎样并行到达。
+4. `src/jixue/bridge/server.py`：看为什么一个任务运行时仍能读取取消命令。
+5. `apps/desktop/src/main/bridge-process.ts`：看 Electron 怎样写入取消信封。
+6. `apps/desktop/src/renderer/src/App.tsx`：看发送按钮怎样切换成停止按钮。
+7. `apps/desktop/src/renderer/src/state.ts`：看 reducer 怎样等待 `loop_complete` 后解锁。
 
-如果只想先抓住核心，读前两个文件就够了。
+如果只想先抓住核心，读第 1、3、6 个文件即可。
 
 ## Agent、Bridge 和界面的分工
 
@@ -75,40 +77,31 @@ for iteration in range(1, 51):
 
 这段伪代码就是当前 Agent Loop 的骨架。
 
-## `/loop` 的三轮完整链路
+## 同时读取两个文件为什么通常只有两轮
 
-在 Fake 模式输入：
-
-```text
-/loop README.md docs/ROADMAP.md
-```
-
-它会确定性地走下面这条链路：
+用户让模型读取 `AGENTS.md` 和 `README.md` 时，模型可以在第一轮响应中一次返回两个 `tool_use`：
 
 ```text
 第 1 轮 LLM
-  → 请求 read_file(README.md)
-  → turn_complete(iteration=1)
-  → Agent 执行工具
-  → tool_result(fake_loop_1)
+  用户问题
+    → 模型返回 read_file(AGENTS.md)
+    → 模型返回 read_file(README.md)
+    → turn_complete(iteration=1)
+
+Agent 执行工具
+  → 得到 AGENTS.md 的 tool_result
+  → 得到 README.md 的 tool_result
 
 第 2 轮 LLM
-  → 收到上一轮完整的 tool_use + tool_result
-  → 请求 read_file(docs/ROADMAP.md)
-  → turn_complete(iteration=2)
-  → Agent 执行工具
-  → tool_result(fake_loop_2)
-
-第 3 轮 LLM
-  → 收到前两次工具请求和结果
-  → 输出最终 Markdown
-  → stop_reason=end_turn，没有新工具
-  → turn_complete(iteration=3)
-  → loop_complete(iterations=3)
+  完整历史 + 两个 tool_result
+    → 模型输出最终回答
+    → turn_complete(iteration=2)
+    → loop_complete(iterations=2)
 ```
 
-为什么工具请求和工具结果都要放回历史？因为模型必须知道“自己刚才请求了什么，以及工具回答了什么”，才能决定下一步。`tool_result.tool_use_id` 还必须和原来的工具请求 ID 相同，否则供应商会拒绝消息格式。
+轮数少并不代表工具已经并发。当前 Agent 仍用 `for call in tool_calls` 依次执行两个工具，只是把两个结果放在同一条 user 工具结果消息中，一次送回模型，所以总共两轮。以后加入并发只会减少工具等待时间，不会改变这里的轮数。
 
+如果模型第一轮只读取 `AGENTS.md`，看完后第二轮才决定读取 `README.md`，再用第三轮回答，那么页面会显示三轮。轮数由 LLM 请求次数决定，不由工具数量决定。
 ## 两个完成事件为什么不能合并
 
 | 事件 | 含义 | UI 应该做什么 |
@@ -129,21 +122,52 @@ for iteration in range(1, 51):
 
 测试时可以传入 `Agent(..., max_iterations=3)`，不用真的跑 50 轮。正常启动不传这个参数，使用默认值即可。
 
+## 点击停止后怎样传到 Agent
+
+停止不是关闭 Electron，也不是杀死 Python 进程。它只取消当前 `request_id` 对应的 Agent Loop：
+
+```text
+用户点击停止按钮
+  → Renderer 调用 window.jixue.cancelChat(request_id)
+  → Preload 转发到 Electron Main
+  → PythonBridge 写入 chat.cancel 信封
+  → BridgeServer 并发读取这条新命令
+  → BridgeApplication 核对目标是否是当前请求
+  → Agent.cancel() 设置 asyncio.Event
+  → _stream_llm() 同时等待“下一个模型事件”和“取消信号”
+  → 取消信号先到：关闭正在等待的模型流
+  → Agent 发出 loop_complete(cancelled=true)
+  → reducer 标记“已停止”并重新解锁输入框
+```
+
+这里最容易误解的是：`chat.send` 还没有完成，为什么 Python 还能收到 `chat.cancel`？因为 `BridgeServer` 为每条命令创建独立异步任务。聊天任务等待网络数据时，读取循环仍可继续接收下一行 JSON。
+
+取消后，页面会保留用户问题和已经流出的半截回复，方便复盘；`ConversationManager` 会把这一对消息标记为 `cancelled`。`to_api_format()` 只发送 `complete` 消息，因此下一次提问不会夹带被取消的任务。
+
+当前内置文件工具执行很快。若取消时工具已经开始，它可能先完成当前工具；Agent 会在下一处取消检查点停止，不再进入下一轮。
 ## 启动和手动测试
 
-确认项目根目录 `.env` 中没有真实配置或把 `JIXUE_LLM_MODE` 设为 `fake`，然后在项目根目录运行：
+在项目根目录 `.env` 中使用真实配置：
+
+```env
+JIXUE_LLM_MODE=configured
+```
+
+然后启动：
 
 ```powershell
 npm run dev
 ```
 
-依次测试：
+按下面顺序手测：
 
-1. 输入普通消息，应该显示“正在第 1 轮”，最后显示“共 1 轮”。
-2. 输入 `/read README.md`，应该出现一张工具卡片，最后显示“共 2 轮”。
-3. 输入 `/loop README.md docs/ROADMAP.md`，应该依次出现两张 `read_file` 卡片，最后显示“共 3 轮”。
-4. 两张卡片都完成后，最终回复应出现“Agent Loop 完成”。
-5. 完成后输入框应恢复可用，页面仍能上下滚动。
+1. 输入“请读取 AGENTS.md 和 README.md，并分别总结它们的作用”。
+2. 如果模型第一轮同时请求两个文件，最后通常显示“共 2 轮”；工具目前仍是串行执行。
+3. 再发送一个会产生较长回复的任务，例如“详细分析当前项目结构，并给出逐文件阅读建议”。
+4. 模型开始流式输出后，点击输入框右下角的方形停止按钮。
+5. 状态栏应先显示“正在停止”，随后消息标题显示“已停止”。
+6. 输入框恢复可用后发送“你好”，应能正常收到新回答，并且模型不应继续上一条已取消任务。
+7. 点击停止不会关闭窗口，也不会让 Python Bridge 离线。
 
 自动检查：
 
@@ -153,7 +177,6 @@ conda run --no-capture-output -n mycoder ruff check .
 conda run --no-capture-output -n mycoder mypy src tests
 npm run test:electron
 ```
-
 ## 常见坑
 
 - 把 `turn_complete` 当成任务结束：工具循环会在第一轮就被 UI 提前截断。
@@ -161,11 +184,13 @@ npm run test:electron
 - 工具失败就抛程序异常：模型失去调整参数和重试的机会；普通工具错误应继续作为 `ToolResult` 返回。
 - 忘记上限：模型可能重复请求同一个工具，任务永远不结束。
 - 用 `stop_reason=end_turn` 作为唯一判断：当前实现优先检查有无工具请求，更容易兼容不同供应商。
-- 在 Agent 中导入 `anthropic`：会破坏供应商隔离，SDK 只能存在于适配器。
+- 在 Agent 中导入 nthropic：会破坏供应商隔离，SDK 只能存在于适配器。
+- 收到取消就杀掉 Python：应用无法继续对话；取消只应结束当前 Loop。
+- 取消后仍把消息发给模型：下一轮会继续已经放弃的任务；取消消息必须从 API 历史中过滤。
+- 只在每轮开头检查取消：模型长时间没有新数据时按钮会像失效；当前实现同时等待模型流和取消信号。
 
 ## 暂未实现
 
-- 用户点击停止并传播取消信号。
 - 连续请求不存在工具时提前终止。
 - 根据 `isConcurrencySafe()` 对多个工具分批并发。
 - `/plan`、`/do` 和只读工具模式。
@@ -177,7 +202,9 @@ npm run test:electron
 - 第 1 步：建立独立 `Agent` 核心，Bridge 只保留协议转发。
 - 第 2 步：把固定两次请求改为真正循环。
 - 第 2 步：加入自然停止、默认 50 轮上限和 `loop_complete`。
-- 第 2 步：加入 Fake 两工具演示和前端轮次显示。
+- 第 2 步：加入离线多轮测试和前端轮次显示。
+- 第 3 步：加入 chat.cancel、可中断模型流和停止按钮。
+- 第 3 步：取消消息保留给 UI，但从后续 API 历史中过滤。
 
 ## 自测题与答案
 
@@ -197,9 +224,17 @@ npm run test:electron
 
 答：因为这可能只是工具循环中的一轮，Agent 后面还要执行工具和再次请求模型。只有 `loop_complete` 才代表整条任务完成。
 
-**问：`/loop` 为什么需要三轮 LLM 请求？**
+**问：一次请求两个读文件工具，为什么通常只显示两轮？**
 
-答：第一轮请求第一个工具，第二轮看完第一个结果后请求第二个工具，第三轮看完第二个结果后输出最终回答。
+答：模型在第一轮可以同时返回两个 `tool_use`，Agent 收集两个结果后用第二轮一次性交给模型生成最终回答。工具数量不是轮数。
+
+**问：点击停止会退出程序吗？**
+
+答：不会。停止只给当前 Agent Loop 设置取消信号，Electron 和 Python Bridge 都继续运行，用户可以马上发送下一条消息。
+
+**问：为什么取消后不能把原问题留在下一次 API 历史里？**
+
+答：用户已经明确放弃该任务。如果仍发送给模型，它可能在新问题中继续旧任务。内部将取消消息标记为 `cancelled`，API 转换时会过滤它们。
 
 **问：第 50 轮仍请求工具时会怎样？**
 

@@ -262,6 +262,7 @@ button, textarea { font: inherit; }
   cursor: pointer;
 }
 
+.composer .cancel-button { background: #555550; font-size: 10px; }
 .composer button:disabled { cursor: default; opacity: 0.2; }
 .composer-note { display: block; margin-top: 7px; color: #aaa9a2; text-align: center; }
 

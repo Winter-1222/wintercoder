@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping
+import asyncio
+from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -21,7 +22,13 @@ from jixue.domain.conversation import (
     MessageStatus,
     Usage,
 )
-from jixue.llm.base import LLMClient, LLMClientError, LLMEventType, LLMStreamEvent
+from jixue.llm.base import (
+    LLMClient,
+    LLMClientError,
+    LLMEventType,
+    LLMStreamEvent,
+    ToolDefinition,
+)
 from jixue.tools import ToolContext, ToolRegistry, ToolResult
 
 
@@ -63,6 +70,8 @@ class Agent:
         self._tools = tools or ToolRegistry()
         self._tool_context = tool_context or ToolContext(Path.cwd().resolve())
         self._max_iterations = max_iterations
+        self._cancel_event = asyncio.Event()
+        self._is_running = False
 
     @property
     def model_name(self) -> str:
@@ -71,6 +80,41 @@ class Agent:
     @property
     def messages(self) -> tuple[Message, ...]:
         return self._conversation.messages
+
+    def cancel(self) -> bool:
+        """请求停止当前任务；返回 False 表示此刻没有正在运行的任务。"""
+
+        if not self._is_running:
+            return False
+        self._cancel_event.set()
+        return True
+
+    async def _stream_llm(
+        self,
+        history: Sequence[APIMessage],
+        tool_definitions: Sequence[ToolDefinition],
+    ) -> AsyncIterator[LLMStreamEvent]:
+        """同时等待模型事件和取消信号，取消时关闭正在等待的流。"""
+
+        iterator = self._llm.stream(history, tool_definitions).__aiter__()
+        while not self._cancel_event.is_set():
+            next_event = asyncio.ensure_future(anext(iterator))
+            cancel_wait = asyncio.create_task(self._cancel_event.wait())
+            done, _ = await asyncio.wait(
+                (next_event, cancel_wait),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if cancel_wait in done:
+                next_event.cancel()
+                await asyncio.gather(next_event, return_exceptions=True)
+                return
+
+            cancel_wait.cancel()
+            await asyncio.gather(cancel_wait, return_exceptions=True)
+            try:
+                yield next_event.result()
+            except StopAsyncIteration:
+                return
 
     async def run(self, user_text: str) -> AsyncIterator[AgentEvent]:
         """处理一条用户消息，并在过程发生时立即向外产生事件。"""
@@ -85,6 +129,9 @@ class Agent:
             )
             return
 
+        # asyncio.Event 会绑定首次等待它的事件循环，每次任务都要新建。
+        self._cancel_event = asyncio.Event()
+        self._is_running = True
         started_at = perf_counter()
         message_id = f"msg_{uuid4().hex}"
         chunks: list[str] = []
@@ -101,6 +148,7 @@ class Agent:
                 retryable=False,
                 scope="request",
             )
+            self._is_running = False
             return
 
         try:
@@ -108,15 +156,22 @@ class Agent:
             stop_reason = "end_turn"
             iterations = 0
             reached_limit = False
+            cancelled = False
+            pending_tool_calls: list[LLMStreamEvent] = []
 
             # 一轮就是一次 LLM 请求。模型需要工具时，执行后把结果送回下一轮；
             # 模型不再请求工具时，说明它已经给出最终答复，循环自然结束。
             for iteration in range(1, self._max_iterations + 1):
+                if self._cancel_event.is_set():
+                    cancelled = True
+                    stop_reason = "cancelled"
+                    break
                 iterations = iteration
                 response_blocks: list[APIContentBlock] = []
                 tool_calls: list[LLMStreamEvent] = []
+                pending_tool_calls = []
 
-                async for llm_event in self._llm.stream(history, tool_definitions):
+                async for llm_event in self._stream_llm(history, tool_definitions):
                     if llm_event.type == LLMEventType.TEXT:
                         chunks.append(llm_event.text)
                         _append_text(response_blocks, llm_event.text)
@@ -127,6 +182,7 @@ class Agent:
                         )
                     elif llm_event.type == LLMEventType.TOOL_USE:
                         tool_calls.append(llm_event)
+                        pending_tool_calls.append(llm_event)
                         response_blocks.append(
                             APIToolUseBlock(
                                 llm_event.tool_use_id,
@@ -156,6 +212,12 @@ class Agent:
                     elif llm_event.type == LLMEventType.COMPLETE:
                         stop_reason = llm_event.stop_reason or "end_turn"
 
+                if self._cancel_event.is_set():
+                    cancelled = True
+                    stop_reason = "cancelled"
+                    for call in pending_tool_calls:
+                        yield _cancelled_tool_event(call)
+                    break
                 # turn_complete 只表示“这一轮 LLM 请求结束”，不是整个任务结束。
                 yield _event(
                     AgentEventType.TURN_COMPLETE,
@@ -186,6 +248,13 @@ class Agent:
 
                 result_blocks: list[APIContentBlock] = []
                 for call in tool_calls:
+                    if self._cancel_event.is_set():
+                        cancelled = True
+                        stop_reason = "cancelled"
+                        for pending in pending_tool_calls:
+                            yield _cancelled_tool_event(pending)
+                        break
+
                     tool_started = perf_counter()
                     if call.tool_error:
                         result = ToolResult(call.tool_error, is_error=True)
@@ -203,6 +272,7 @@ class Agent:
                             result.is_error,
                         )
                     )
+                    pending_tool_calls.remove(call)
                     yield _event(
                         AgentEventType.TOOL_RESULT,
                         id=call.tool_use_id,
@@ -213,6 +283,12 @@ class Agent:
                         metadata=dict(result.metadata),
                     )
 
+                if cancelled:
+                    break
+                if self._cancel_event.is_set():
+                    cancelled = True
+                    stop_reason = "cancelled"
+                    break
                 # 工具结果必须紧跟模型的 tool_use，并使用相同的 tool_use_id。
                 history = [
                     *history,
@@ -221,10 +297,7 @@ class Agent:
                 ]
 
             if reached_limit:
-                warning = (
-                    f"\n\n> Agent 已执行 {self._max_iterations} 轮但仍未完成，"
-                    "已自动停止。"
-                )
+                warning = f"\n\n> Agent 已执行 {self._max_iterations} 轮但仍未完成，已自动停止。"
                 chunks.append(warning)
                 yield _event(
                     AgentEventType.STREAM_TEXT,
@@ -233,20 +306,23 @@ class Agent:
                 )
 
             turn_index = 1 + sum(
-                message.role == "assistant"
-                and message.status is MessageStatus.COMPLETE
+                message.role == "assistant" and message.status is MessageStatus.COMPLETE
                 for message in self._conversation.messages
             )
             answer = "".join(chunks)
-            if answer:
+            if cancelled:
+                # 取消的本轮仍可供 UI 复盘，但 user 和 assistant 都不进入下次 API 历史。
+                self._conversation.cancel_last_user()
                 self._conversation.add_assistant(
                     answer,
                     usage=turn_usage,
-                    status=(
-                        MessageStatus.FAILED
-                        if reached_limit
-                        else MessageStatus.COMPLETE
-                    ),
+                    status=MessageStatus.CANCELLED,
+                )
+            elif answer:
+                self._conversation.add_assistant(
+                    answer,
+                    usage=turn_usage,
+                    status=(MessageStatus.FAILED if reached_limit else MessageStatus.COMPLETE),
                 )
             # loop_complete 才表示这一条用户任务彻底结束，UI 应在这里解锁输入框。
             yield _event(
@@ -258,6 +334,7 @@ class Agent:
                 model=self.model_name,
                 message_id=message_id,
                 is_error=reached_limit,
+                cancelled=cancelled,
             )
         except LLMClientError as error:
             self._remember_failed(chunks)
@@ -277,6 +354,8 @@ class Agent:
                 retryable=False,
                 scope="request",
             )
+        finally:
+            self._is_running = False
 
     def _remember_failed(self, chunks: list[str]) -> None:
         """保留已经显示的半截回复，但标记失败，下一轮不会发给 LLM。"""
@@ -286,6 +365,20 @@ class Agent:
                 "".join(chunks),
                 status=MessageStatus.FAILED,
             )
+
+
+def _cancelled_tool_event(call: LLMStreamEvent) -> AgentEvent:
+    """关闭尚未执行的工具卡片，避免取消后一直显示“执行中”。"""
+
+    return _event(
+        AgentEventType.TOOL_RESULT,
+        id=call.tool_use_id,
+        name=call.tool_name,
+        content="用户已停止任务，工具未执行",
+        is_error=True,
+        duration_ms=0,
+        metadata={},
+    )
 
 
 def _event(event_type: AgentEventType, **payload: object) -> AgentEvent:
