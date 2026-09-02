@@ -27,10 +27,13 @@ class FakeLLMClient:
         self,
         messages: Sequence[APIMessage],
         tools: Sequence[ToolDefinition] = (),
+        *,
+        system: str = "",
     ) -> AsyncIterator[LLMStreamEvent]:
         """读取完整历史，并把固定 Markdown 按不规则边界拆成文本增量。"""
 
         latest_content = messages[-1].content if messages else ""
+        latest_user_text = _without_system_reminder(latest_content)
         history_characters = sum(len(str(message.content)) for message in messages)
 
         # `/loop 文件1 文件2` 会在三轮 LLM 请求中连续触发两次读文件，
@@ -39,8 +42,7 @@ class FakeLLMClient:
             (
                 index
                 for index in range(len(messages) - 1, -1, -1)
-                if messages[index].role == "user"
-                and isinstance(messages[index].content, str)
+                if messages[index].role == "user" and isinstance(messages[index].content, str)
             ),
             -1,
         )
@@ -49,6 +51,7 @@ class FakeLLMClient:
         if command_index >= 0:
             command = messages[command_index].content
             assert isinstance(command, str)
+            command = _without_system_reminder(command)
             if command.startswith("/loop "):
                 loop_paths = command.removeprefix("/loop ").split()
                 loop_result_count = sum(
@@ -76,8 +79,8 @@ class FakeLLMClient:
                 )
                 return
         # `/read 路径` 是教学用的确定性入口，方便不花 API 费用手测工具闭环。
-        if isinstance(latest_content, str) and latest_content.startswith("/read "):
-            path = latest_content.removeprefix("/read ").strip()
+        if latest_user_text.startswith("/read "):
+            path = latest_user_text.removeprefix("/read ").strip()
             has_read_file = any(tool.get("name") == "read_file" for tool in tools)
             if path and has_read_file:
                 usage = Usage(max(1, history_characters // 4), 8)
@@ -102,9 +105,7 @@ class FakeLLMClient:
                 "这次任务一共经历了 **3 轮 LLM 请求** 和 **2 次工具执行**。"
             )
         elif isinstance(latest_content, tuple):
-            results = [
-                block for block in latest_content if isinstance(block, APIToolResultBlock)
-            ]
+            results = [block for block in latest_content if isinstance(block, APIToolResultBlock)]
             previews = []
             for result in results:
                 content = result.content
@@ -115,7 +116,7 @@ class FakeLLMClient:
             response = "## 工具执行完成\n\n" + "\n\n".join(previews)
         else:
             # 只回显前 28 个字符，避免固定回复被超长输入撑大。
-            preview = latest_content.strip().replace("\n", " ")[:28] or "空消息"
+            preview = latest_user_text.strip().replace("\n", " ")[:28] or "空消息"
             response = (
                 "## 霁雪已经醒来\n\n"
                 f"我收到了你的消息：**{preview}**\n\n"
@@ -152,3 +153,11 @@ class FakeLLMClient:
             usage=usage,
             stop_reason="end_turn",
         )
+
+
+def _without_system_reminder(content: object) -> str:
+    """Fake 只解析用户原话，忽略 Agent 临时附加的动态提醒。"""
+
+    if not isinstance(content, str):
+        return ""
+    return content.split("\n\n<system-reminder>", maxsplit=1)[0]

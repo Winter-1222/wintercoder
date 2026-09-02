@@ -29,6 +29,7 @@ from jixue.llm.base import (
     LLMStreamEvent,
     ToolDefinition,
 )
+from jixue.prompt import build_system_prompt, build_system_reminder
 from jixue.tools import ToolContext, ToolRegistry, ToolResult
 
 # 模型连续三次请求不存在或已禁用的工具，通常说明它已经无法自行纠正。
@@ -79,6 +80,8 @@ class Agent:
         self._conversation = conversation or ConversationManager()
         self._tools = tools or ToolRegistry()
         self._tool_context = tool_context or ToolContext(Path.cwd().resolve())
+        # 固定提示词只生成一次；每轮不变，供应商才有机会复用 Prompt Cache。
+        self._system_prompt = build_system_prompt(self._tool_context.project_root)
         self._max_iterations = max_iterations
         self._cancel_event = asyncio.Event()
         self._is_running = False
@@ -118,7 +121,11 @@ class Agent:
     ) -> AsyncIterator[LLMStreamEvent]:
         """同时等待模型事件和取消信号，取消时关闭正在等待的流。"""
 
-        iterator = self._llm.stream(history, tool_definitions).__aiter__()
+        iterator = self._llm.stream(
+            history,
+            tool_definitions,
+            system=self._system_prompt,
+        ).__aiter__()
         while not self._cancel_event.is_set():
             next_event = asyncio.ensure_future(anext(iterator))
             cancel_wait = asyncio.create_task(self._cancel_event.wait())
@@ -162,10 +169,15 @@ class Agent:
         self._conversation.add_user(user_text.strip())
 
         try:
-            history = _history_for_mode(
-                self._conversation.to_api_format(),
-                mode,
+            # 时间和 Git 状态会变化，因此放进临时消息，而不是固定 System Prompt。
+            reminder = await asyncio.to_thread(
+                build_system_reminder,
                 self._tool_context.project_root,
+                mode.value,
+            )
+            history = _history_with_reminder(
+                self._conversation.to_api_format(),
+                reminder,
             )
         except ConversationError as error:
             yield _event(
@@ -180,9 +192,7 @@ class Agent:
 
         try:
             # Plan 模式只把只读工具告诉模型，这是第一层保护。
-            tool_definitions = self._tools.to_api_format(
-                read_only_only=mode is AgentMode.PLAN
-            )
+            tool_definitions = self._tools.to_api_format(read_only_only=mode is AgentMode.PLAN)
             stop_reason = "end_turn"
             iterations = 0
             reached_limit = False
@@ -463,26 +473,14 @@ class Agent:
             )
 
 
-def _history_for_mode(
+def _history_with_reminder(
     history: Sequence[APIMessage],
-    mode: AgentMode,
-    project_root: Path,
+    reminder: str,
 ) -> list[APIMessage]:
-    """Plan 指令只加入本次 API 历史，不污染用户真正保存的消息。"""
+    """把客户端提醒附到当前问题副本，不污染真正保存的用户消息。"""
 
     result = list(history)
-    if mode is AgentMode.DO:
-        return result
-
-    reminder = (
-        "<system-reminder>\n"
-        "当前处于 Plan 模式。请先使用只读工具调查现状，再给出清晰的执行计划；"
-        "不要写入、编辑或删除文件，也不要执行会改变环境的操作。"
-        "最终只输出计划，等待用户切换到 Do 模式。\n"
-        f"当前工作目录：{project_root}\n"
-        "</system-reminder>"
-    )
-    # 当前用户问题一定是最后一条字符串 user 消息；倒序查找让函数更耐受工具块历史。
+    # 当前用户问题一定是最后一条字符串 user 消息；倒序查找可避开工具结果块。
     for index in range(len(result) - 1, -1, -1):
         message = result[index]
         if message.role == "user" and isinstance(message.content, str):
@@ -502,9 +500,7 @@ def _partition_tool_calls(
     for call in calls:
         tool = tools.get(call.tool_name)
         is_safe = (
-            not call.tool_error
-            and tool is not None
-            and tool.is_concurrency_safe(call.tool_input)
+            not call.tool_error and tool is not None and tool.is_concurrency_safe(call.tool_input)
         )
         if is_safe:
             safe_batch.append(call)

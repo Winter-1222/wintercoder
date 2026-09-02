@@ -56,6 +56,8 @@ class AnthropicLLMClient:
         self,
         messages: Sequence[APIMessage],
         tools: Sequence[ToolDefinition] = (),
+        *,
+        system: str = "",
     ) -> AsyncIterator[LLMStreamEvent]:
         sdk_messages = [_to_sdk_message(message) for message in messages]
         sdk_tools = cast(list[ToolParam], [dict(tool) for tool in tools])
@@ -64,6 +66,7 @@ class AnthropicLLMClient:
             async with self._get_client().messages.stream(
                 model=self._config.model,
                 max_tokens=self._max_tokens,
+                system=system,
                 messages=sdk_messages,
                 tools=sdk_tools,
                 cache_control={"type": "ephemeral"},

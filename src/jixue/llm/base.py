@@ -50,4 +50,6 @@ class LLMClient(Protocol):
         self,
         messages: Sequence[APIMessage],
         tools: Sequence[ToolDefinition] = (),
+        *,
+        system: str = "",
     ) -> AsyncIterator[LLMStreamEvent]: ...

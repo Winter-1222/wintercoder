@@ -22,13 +22,14 @@ myAgent/
 
 | 文件 | 职责 |
 | --- | --- |
-| `src/jixue/agent.py` | Agent 核心：保存 Plan/Do 模式、循环调用 LLM、限制工具、分批并发并判断停止 |
+| `src/jixue/agent.py` | Agent 核心：组装提示上下文、保存 Plan/Do 模式、循环调用 LLM、执行工具并判断停止 |
+| `src/jixue/prompt.py` | 生成稳定的七段式 System Prompt，以及每轮动态的模式、时间和 Git 提醒 |
 | `src/jixue/domain/conversation.py` | 普通消息、工具内容块、多轮历史，以及完成/取消消息的 API 前清洗 |
 | `src/jixue/domain/events.py` | Electron 与 Python 之间的一行 JSON 信封 |
-| `src/jixue/llm/base.py` | 霁雪自己的 LLM 接口和流式事件 |
+| `src/jixue/llm/base.py` | 霁雪自己的 LLM 接口；统一接收 system、messages、tools 并输出流事件 |
 | `src/jixue/llm/fake.py` | 离线模拟 LLM；`/read` 测一次工具，`/loop` 测两次工具循环 |
 | `src/jixue/llm/config.py` | 从 `models.yaml` 和环境中生成四字段配置 |
-| `src/jixue/llm/adapters/anthropic_client.py` | 唯一接触 Anthropic SDK，解析流并转换工具内容块 |
+| `src/jixue/llm/adapters/anthropic_client.py` | 唯一接触 Anthropic SDK，把 system、messages、tools 发给协议端点并翻译流事件 |
 | `src/jixue/bridge/bootstrap.py` | 读取项目根目录 `.env`，选择 Fake 或真实 LLM |
 | `src/jixue/bridge/application.py` | 转发模式、聊天和取消命令，并为 Agent 事件包装信封 |
 | `src/jixue/bridge/server.py` | 从 stdin 收 JSON，从 stdout 发 JSON |
@@ -67,6 +68,7 @@ myAgent/
 | `docs/chapters/01-llm-ui/README.md` | 第一章代码和完整消息链路 |
 | `docs/chapters/02-tools/README.md` | 第二章工具底座和执行链路 |
 | `docs/chapters/03-agent-loop/README.md` | 第三章 Agent 核心、循环步骤和手测记录 |
+| `docs/chapters/04-system-prompt/README.md` | 第四章提示词分层、完整请求链路和手测说明 |
 | `scripts/test-all.ps1` | 顺序执行本地自动化检查 |
 
 每章目录只允许有一个 `README.md`。测试文件虽然存在于本机，但由 `.gitignore` 排除，不会提交。
