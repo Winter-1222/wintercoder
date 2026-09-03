@@ -15,6 +15,7 @@ const api: JixueDesktopApi = {
   respondPermission: (requestId, toolUseId, allow) =>
     ipcRenderer.invoke('jixue:respond-permission', requestId, toolUseId, allow),
   setAgentMode: (mode) => ipcRenderer.invoke('jixue:set-agent-mode', mode),
+  setPermissionMode: (mode) => ipcRenderer.invoke('jixue:set-permission-mode', mode),
   getBridgeState: () => ipcRenderer.invoke('jixue:get-bridge-state'),
   onBridgeEvent: (listener) => subscribe<BridgeEnvelope>('jixue:bridge-event', listener),
   onBridgeState: (listener) => subscribe<BridgeState>('jixue:bridge-state', listener)

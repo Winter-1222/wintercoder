@@ -4,8 +4,14 @@ import { useEffect, useReducer, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
-import type { AgentMode, BridgeEnvelope } from '../../shared/protocol'
+import type { AgentMode, BridgeEnvelope, PermissionMode } from '../../shared/protocol'
 import { chatReducer, initialChatState, type UiMessage } from './state'
+
+const PERMISSION_MODE_LABELS: Record<PermissionMode, string> = {
+  confirm_edits: '修改需确认',
+  ask_all: '每次都询问',
+  auto_allow: '自动允许'
+}
 
 function MessageView({
   message,
@@ -161,9 +167,22 @@ export default function App(): React.JSX.Element {
       dispatch({ type: 'model_changed', model: text(event.payload.model, 'fake-jixue') })
       const mode = text(event.payload.mode)
       if (mode === 'plan' || mode === 'do') dispatch({ type: 'mode_changed', mode })
+      const permissionMode = text(event.payload.permission_mode)
+      if (
+        permissionMode === 'confirm_edits' ||
+        permissionMode === 'ask_all' ||
+        permissionMode === 'auto_allow'
+      ) {
+        dispatch({ type: 'permission_mode_changed', mode: permissionMode })
+      }
     } else if (event.type === 'mode.changed') {
       const mode = text(event.payload.mode)
       if (mode === 'plan' || mode === 'do') dispatch({ type: 'mode_changed', mode })
+    } else if (event.type === 'permission_mode.changed') {
+      const mode = text(event.payload.mode)
+      if (mode === 'confirm_edits' || mode === 'ask_all' || mode === 'auto_allow') {
+        dispatch({ type: 'permission_mode_changed', mode })
+      }
     } else if (event.type === 'stream_text') {
       dispatch({
         type: 'text_received',
@@ -299,6 +318,15 @@ export default function App(): React.JSX.Element {
     }
   }
 
+  async function changePermissionMode(mode: PermissionMode): Promise<void> {
+    if (state.activeRequestId || state.permissionMode === mode) return
+    try {
+      await window.jixue.setPermissionMode(mode)
+    } catch (error) {
+      console.error('切换权限模式失败', error)
+    }
+  }
+
   return (
     <main className="app-shell">
       <aside className="sidebar">
@@ -330,7 +358,7 @@ export default function App(): React.JSX.Element {
             <div className="message-list">
               {state.messages.map((message) => (
                 <MessageView
-                  key={message.id}
+                  key={message.requestId + '_' + message.id}
                   message={message}
                   onPermission={respondPermission}
                 />
@@ -377,6 +405,21 @@ export default function App(): React.JSX.Element {
                     Do
                   </button>
                 </div>
+                <label htmlFor="permission-mode" className="sr-only">权限模式</label>
+                <select
+                  id="permission-mode"
+                  className="permission-mode-select"
+                  value={state.permissionMode}
+                  disabled={!!state.activeRequestId}
+                  title="决定哪些工具需要你确认；硬拦截和路径沙箱始终生效"
+                  onChange={(event) =>
+                    void changePermissionMode(event.target.value as PermissionMode)
+                  }
+                >
+                  <option value="confirm_edits">修改需确认</option>
+                  <option value="ask_all">每次都询问</option>
+                  <option value="auto_allow">自动允许</option>
+                </select>
                 <div className="run-status">
                   <span className="model-chip">{state.model}</span>
                   <span>
@@ -408,6 +451,7 @@ export default function App(): React.JSX.Element {
           </div>
           <small className="composer-note">
             {state.mode === 'plan' ? 'Plan：只调查并给出计划' : 'Do：可执行已启用工具'} ·
+            权限：{PERMISSION_MODE_LABELS[state.permissionMode]} ·
             Enter 发送 · Shift + Enter 换行
           </small>
         </footer>

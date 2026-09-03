@@ -22,9 +22,9 @@ myAgent/
 
 | 文件 | 职责 |
 | --- | --- |
-| `src/jixue/agent.py` | Agent 核心：循环调用 LLM，在工具执行前完成校验和权限等待，再按原顺序回传结果 |
-| `src/jixue/prompt.py` | 生成稳定的七段式 System Prompt，以及每轮动态的模式、时间和 Git 提醒 |
-| `src/jixue/permission.py` | 权限判断核心：危险命令硬拦截、项目路径沙箱和 ALLOW/DENY/ASK 结果 |
+| `src/jixue/agent.py` | Agent 核心：循环调用 LLM，在工具执行前完成校验、权限模式判断和确认等待，再按原顺序回传结果 |
+| `src/jixue/prompt.py` | 生成稳定的七段式 System Prompt，以及每轮动态的任务模式、权限模式、时间和 Git 提醒 |
+| `src/jixue/permission.py` | 权限判断核心：危险命令、路径沙箱、精确安全规则、三种权限模式和 ALLOW/DENY/ASK 结果 |
 | `src/jixue/domain/conversation.py` | 普通消息、工具内容块、多轮历史，以及完成/取消消息的 API 前清洗 |
 | `src/jixue/domain/events.py` | Electron 与 Python 之间的一行 JSON 信封 |
 | `src/jixue/llm/base.py` | 霁雪自己的 LLM 接口；统一接收 system、messages、tools 并输出流事件 |
@@ -32,7 +32,7 @@ myAgent/
 | `src/jixue/llm/config.py` | 从 `models.yaml` 和环境中生成四字段配置 |
 | `src/jixue/llm/adapters/anthropic_client.py` | 唯一接触 Anthropic SDK，把 system、messages、tools 发给协议端点并翻译流事件 |
 | `src/jixue/bridge/bootstrap.py` | 读取项目根目录 `.env`，选择 Fake 或真实 LLM |
-| `src/jixue/bridge/application.py` | 转发模式、聊天、取消和权限回复，并为 Agent 事件包装信封 |
+| `src/jixue/bridge/application.py` | 转发任务模式、权限模式、聊天、取消和权限回复，并为 Agent 事件包装信封 |
 | `src/jixue/bridge/server.py` | 从 stdin 收 JSON、从 stdout 发 JSON，并注册当前内置工具 |
 | `src/jixue/bridge/__main__.py` | 让 `python -m jixue.bridge` 能启动 |
 | `src/jixue/tools/base.py` | 工具合同、ToolResult 和通用 BaseTool |
@@ -50,12 +50,12 @@ myAgent/
 
 | 文件 | 职责 |
 | --- | --- |
-| `apps/desktop/src/main/index.ts` | 创建窗口，校验聊天、取消、模式和权限回复 IPC |
-| `apps/desktop/src/main/bridge-process.ts` | 启动 Conda 子进程，发送聊天、取消、模式和权限命令并处理 NDJSON |
-| `apps/desktop/src/preload/index.ts` | 只向网页暴露白名单中的聊天、取消、模式、权限和订阅接口 |
+| `apps/desktop/src/main/index.ts` | 创建窗口，校验聊天、取消、任务模式、权限模式和确认回复 IPC |
+| `apps/desktop/src/main/bridge-process.ts` | 启动 Conda 子进程，发送聊天、取消、两种模式和权限命令并处理 NDJSON |
+| `apps/desktop/src/preload/index.ts` | 只向网页暴露白名单中的聊天、取消、模式、确认和订阅接口 |
 | `apps/desktop/src/shared/protocol.ts` | 前后端共用的事件信封和桌面 API 类型 |
-| `apps/desktop/src/renderer/src/App.tsx` | 聊天页面：翻译 Agent 事件，展示 Plan/Do、工具和权限操作 |
-| `apps/desktop/src/renderer/src/state.ts` | reducer：更新模式、工具、权限确认、轮次、停止和完成状态 |
+| `apps/desktop/src/renderer/src/App.tsx` | 聊天页面：翻译 Agent 事件，展示 Plan/Do、三种权限模式、工具和确认操作 |
+| `apps/desktop/src/renderer/src/state.ts` | reducer：更新任务模式、权限模式、工具卡片、轮次、停止和完成状态 |
 | `apps/desktop/src/renderer/src/styles.css` | Codex 风格的聊天、工具、权限卡片和输入区样式 |
 | `apps/desktop/src/renderer/src/main.tsx` | React 页面入口 |
 

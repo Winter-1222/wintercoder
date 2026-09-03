@@ -9,7 +9,8 @@ import {
   isBridgeEnvelope,
   type AgentMode,
   type BridgeEnvelope,
-  type BridgeState
+  type BridgeState,
+  type PermissionMode
 } from '../shared/protocol'
 
 const MAX_BUFFER = 1024 * 1024
@@ -103,6 +104,11 @@ export class PythonBridge {
   setAgentMode(mode: AgentMode): void {
     if (this.state.status !== 'ready') throw new Error('Python Bridge 尚未就绪')
     this.write('agent.mode', 'mode_' + randomUUID(), { mode })
+  }
+
+  setPermissionMode(mode: PermissionMode): void {
+    if (this.state.status !== 'ready') throw new Error('Python Bridge 尚未就绪')
+    this.write('permission.mode', 'permission_mode_' + randomUUID(), { mode })
   }
 
   stop(): void {

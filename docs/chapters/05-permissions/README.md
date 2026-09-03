@@ -1,209 +1,229 @@
 # 第 5 章：五层权限防御
 
-本章让 Agent 在工具真正运行前先判断风险，不能只依赖提示词。本章调整为四个小步骤；当前完成第 3 步：桌面端已经能让用户允许或拒绝一次工具调用。
+本章已完成。现在霁雪不会拿到工具就立刻执行，而是先经过硬拦截、路径沙箱、规则、权限模式和人工确认。
 
 ## 当前成果
 
-- 危险命令命中硬黑名单后直接拒绝。
-- 文件工具和 glob 不能访问项目目录之外。
-- 项目内只读工具自动执行，写入和命令工具默认询问。
-- write_file、edit_file、bash 已注册到正式 Bridge。
-- 页面收到 permission_request 后，在原工具卡片中显示输入参数、风险原因和允许/拒绝按钮。
-- 重复点击、过期按钮、IPC 发送失败和等待期间取消都有明确状态。
-- 用户拒绝不会让 Agent 崩溃，而会成为 is_error=true 的 tool_result 返回模型。
-- 第 4 步还要补最小权限规则和权限模式，完成第 3、4 层防线。
+- 灾难命令直接拒绝，任何权限模式都不能放行。
+- 文件和搜索工具只能访问当前项目。
+- 提供“修改需确认”“每次都询问”“自动允许”三种权限模式。
+- write_file、edit_file、bash 需要确认时，会在工具卡片中显示参数和允许/拒绝按钮。
+- 拒绝与校验失败都会变成 is_error=true 的 tool_result，模型仍能调整方案。
+- Plan/Do 与权限模式彼此独立：前者决定模型能看见哪些工具，后者决定已开放工具是否询问。
 
 ## 推荐阅读顺序
 
-1. src/jixue/permission.py：看 ALLOW、DENY、ASK 怎样产生。
-2. src/jixue/agent.py：搜索 _check_tool_call() 和 PERMISSION_REQUEST。
-3. src/jixue/bridge/application.py：看 permission.respond 怎样唤醒 Agent。
-4. apps/desktop/src/shared/protocol.ts：看页面可以调用的 respondPermission()。
-5. apps/desktop/src/main/bridge-process.ts：看决定怎样变成一行 JSON。
-6. apps/desktop/src/renderer/src/state.ts：看 reducer 怎样改变权限卡片状态。
-7. apps/desktop/src/renderer/src/App.tsx：看事件翻译和允许/拒绝按钮。
-8. src/jixue/tools/write_tools.py 与 bash.py：最后看真正产生副作用的代码。
+1. src/jixue/permission.py：先看 PermissionMode、PermissionDecision 和 evaluate_permission()。
+2. src/jixue/agent.py：搜索 _check_tool_call()，看权限判断位于真正执行之前。
+3. src/jixue/bridge/application.py：搜索 permission.mode 和 permission.respond。
+4. apps/desktop/src/shared/protocol.ts：看 Electron 与 Python 约定了哪些方法。
+5. apps/desktop/src/renderer/src/state.ts：看 reducer 如何保存权限模式和确认卡片状态。
+6. apps/desktop/src/renderer/src/App.tsx：看选择框、允许按钮和拒绝按钮。
+7. src/jixue/tools/write_tools.py 与 bash.py：最后看通过权限后真正执行副作用的代码。
 
-## 一条需要确认的消息怎样跑起来
+## 先分清两个概念
 
-假设用户要求创建 notes/todo.md：
+PermissionDecision 是某一次工具调用的判断结果：
 
 ~~~text
-用户点击发送
-  → Electron 调用 chat.send
-  → Python Agent 发起第 1 轮 LLM 请求
-  → 模型返回 tool_use
-       id = tool_123
-       name = write_file
-       input = {path, content}
-  → Agent._check_tool_call()
-       JSON、工具名、参数、Plan 模式、路径依次通过
-  → evaluate_permission() 返回 ASK
-  → Agent 创建 Future
-  → Agent 发出 permission_request
-  → BridgeServer 写出一行 JSON
-  → PythonBridge 转发给 Electron 页面
-  → App.handleEvent() 翻译成 permission_requested action
-  → chatReducer 找到 id=tool_123 的工具卡片
-  → 页面展示输入参数和允许/拒绝按钮
-  → Agent 暂停在 await，write_file 还没有运行
+ALLOW → 直接执行
+ASK   → 暂停，等待用户选择
+DENY  → 不询问，直接返回失败结果
+~~~
 
-用户点击“允许”
-  → reducer 先把卡片设为 allowing，防止重复点击
-  → Preload 调用 jixue:respond-permission
-  → Electron Main 校验 requestId、toolUseId 和 allow
-  → PythonBridge 发送 permission.respond
-  → BridgeApplication 同时核对聊天 ID 和工具调用 ID
-  → Agent.respond_permission() 把 true 放入 Future
-  → Agent 被唤醒，开始执行 write_file
-  → Agent 发出 tool_result，仍使用 tool_123
-  → 第 2 轮 LLM 收到工具结果并生成最终回复
+PermissionMode 是用户选择的整体策略。它会影响大多数调用得到 ALLOW 还是 ASK，但不能把 DENY 改成 ALLOW。
+
+## 五层防线怎样工作
+
+~~~text
+模型返回 tool_use
+  ↓
+第 1 层：危险命令硬拦截
+  命中 → DENY，立即停止这次调用
+  ↓
+第 2 层：项目路径沙箱
+  越过项目目录 → DENY
+  ↓
+第 3 层：细粒度规则
+  默认模式下，少量精确匹配的只读 Git 命令 → ALLOW
+  ↓
+第 4 层：权限模式
+  修改需确认 / 每次都询问 / 自动允许
+  ↓
+第 5 层：HITL 人工确认
+  判断为 ASK → 页面显示允许/拒绝
+  ↓
+Tool.execute()
+~~~
+
+最重要的顺序是：硬拦截和路径沙箱永远在模式之前。因此选择“自动允许”只是省去确认，不是关闭安全底线。
+
+## 三种权限模式
+
+| 界面名称 | 只读工具 | 写入、编辑、普通命令 | 适合场景 |
+| --- | --- | --- | --- |
+| 修改需确认 | 自动执行 | 通常询问 | 默认；效率与安全较平衡 |
+| 每次都询问 | 也要询问 | 询问 | 学习每次调用、严格观察 Agent |
+| 自动允许 | 自动执行 | 自动执行 | 信任当前任务并追求速度 |
+
+“每次都询问”和“自动允许”的区别，就是每一次普通工具调用前要不要停下来等你。两者都不能绕过硬拦截和项目路径沙箱。
+
+自动允许仍然风险较高，尤其是 bash：命令字符串能力很广，本项目并不是完整的操作系统沙箱。不了解任务或命令时，使用默认的“修改需确认”。
+
+## 细粒度规则
+
+第五章只实现一小组容易验证的精确规则。默认“修改需确认”模式下，以下命令直接执行：
+
+~~~text
+git status
+git status --short
+git diff
+git diff --staged
+git log -1 --oneline
+git branch --show-current
+~~~
+
+这是完整字符串匹配，不是 git * 通配规则。例如 git push 仍要询问，git status; 其他命令也不会误命中。
+
+## 一次需要确认的消息怎样跑
+
+假设用户让霁雪创建 notes/todo.md：
+
+~~~text
+用户发送消息
+  → 第 1 轮 LLM 返回 write_file 的 tool_use
+  → Agent._check_tool_call() 校验工具名和参数
+  → evaluate_permission() 依次检查五层规则
+  → 默认模式得到 ASK
+  → Agent 创建 Future 并发出 permission_request
+  → Bridge → Electron → App.handleEvent()
+  → chatReducer 把原工具卡片改成 pending
+  → 页面显示参数和允许/拒绝
+  → Agent 暂停，文件此时还不存在
+
+用户点击允许
+  → 页面先改成 allowing，防止重复点击
+  → Preload → Electron Main → PythonBridge
+  → permission.respond 携带聊天 ID、工具调用 ID 和 true
+  → BridgeApplication 核对两个 ID
+  → Agent.respond_permission() 唤醒 Future
+  → write_file 真正执行
+  → tool_result 使用原 tool_use_id 返回模型
+  → 第 2 轮 LLM 根据结果给最终回复
   → loop_complete 解锁输入框
 ~~~
 
-点击“拒绝”时，前半段完全相同。区别只是 Future 得到 false，工具处理函数不会运行；Agent 生成“用户拒绝了本次工具调用”的错误结果，再让模型收尾。
+点击拒绝时，Future 得到 false，write_file 不运行。Agent 把“用户拒绝”作为错误工具结果发给模型，而不是让程序崩溃。
 
-Future 可以先理解成一个暂时没有答案的盒子。Agent await 这个盒子时不会空转；用户决定到达后，Agent 才从暂停位置继续。
-
-## 为什么要核对两个 ID
-
-permission.respond 包含：
+## 切换权限模式的链路
 
 ~~~text
-target_request_id  → 这是哪一条聊天任务
-tool_use_id        → 这是任务中的哪一次工具调用
-allow              → true 允许，false 拒绝
+选择“自动允许”
+  → App 调用 window.jixue.setPermissionMode()
+  → Electron 校验值，只接受三种固定字符串
+  → PythonBridge 发送 permission.mode
+  → BridgeApplication 确认当前没有任务运行
+  → Agent.set_permission_mode()
+  → Python 回发 permission_mode.changed
+  → reducer 更新选择框和底部说明
 ~~~
 
-只核对 tool_use_id 不够。旧任务留下的按钮可能晚到，因此 Bridge 必须先确认聊天任务仍在运行，再确认 Agent 正在等待这一次工具调用。任一不匹配都会返回 accepted=false，工具不会执行。
+任务运行中选择框会禁用，防止同一轮执行到一半时规则突然变化。
 
-## 页面状态怎样变化
+## Plan/Do 与权限模式
 
-工具卡片的权限状态是：
+这两个开关不是一回事：
 
 ~~~text
-pending
-  → 点击允许：allowing
-  → 点击拒绝：denying
-  → Bridge 接受：allowed 或 denied
-  → Bridge 不接受：expired
-  → IPC 发送失败：回到 pending，可重新选择
+Plan / Do       → 决定哪些工具能进入本轮工具列表
+权限模式         → 决定已进入列表的工具是否需要确认
 ~~~
 
-tool_result 到达后，原工具卡片从 streaming 变成 complete 或 failed。它不会新建另一张卡片，因为 reducer 用同一个 tool_use_id 定位。
+Plan 只暴露只读工具，并且 Agent 执行入口还会再拦一次写工具。即使同时选择“自动允许”，Plan 也不能写文件。
 
-## 三个会询问的工具
+## 启动与手动测试
 
-### write_file
-
-用 path 和 content 创建或整体覆盖 UTF-8 文件。它会创建缺失的父目录，内容最多 1,000,000 字符。
-
-### edit_file
-
-用 path、old_text、new_text 做一次精确替换。old_text 必须恰好出现一次；出现零次或多次都不修改文件。
-
-### bash
-
-在项目根目录运行命令。Windows 使用 PowerShell，macOS/Linux 使用 Bash；最长 30 秒，输出最多约 50,000 字符。传给子进程前会移除常见密钥环境变量。
-
-bash 可以运行很多操作，因此本章只把它作为需要确认的串行工具。它不是完整的操作系统沙箱。
-
-## 五层防线进度
-
-| 层级 | 当前状态 |
-| --- | --- |
-| 1. 危险命令硬拦截 | 已完成并接入 Agent |
-| 2. 项目路径沙箱 | 已完成并接入 Agent |
-| 3. 细粒度权限规则 | 第 4 步实现最小规则 |
-| 4. 整体权限模式 | 第 4 步实现最小模式 |
-| 5. HITL 人工确认 | 后端、IPC 和页面已全部打通 |
-
-## 启动和手动测试
-
-在项目根目录启动：
+在项目根目录运行：
 
 ~~~powershell
 conda activate mycoder
 npm run dev
 ~~~
 
-### 测试允许
+### 1. 测试默认模式
 
-1. 对真实模型说：“请创建 manual-permission-test.txt，内容是 permission ok。”
-2. 页面应出现 write_file 工具卡片，并显示“需要确认”。
-3. 展开的输入参数中应能看到目标路径和内容。
-4. 此时先检查项目目录，文件不应该存在。
-5. 点击“允许”。
-6. 卡片应变成“工具完成”，文件此时才出现，模型随后给出最终回复。
+1. 保持 Do 和“修改需确认”。
+2. 让模型创建 manual-permission-test.txt，内容为 permission ok。
+3. 卡片出现时先确认文件不存在。
+4. 点击允许，文件才应出现，随后模型完成第 2 轮回复。
+5. 再创建另一个文件并点击拒绝，文件不应出现。
 
-### 测试拒绝
+### 2. 测试每次都询问
 
-1. 再让模型创建 manual-denied-test.txt。
-2. 权限卡片出现后点击“拒绝”。
-3. 卡片应显示失败，模型应知道用户拒绝了操作。
-4. 项目目录中不应该出现 manual-denied-test.txt。
-5. 输入框恢复后仍能继续发送消息。
+1. 选择“每次都询问”。
+2. 让模型读取 README.md。
+3. read_file 虽是只读工具，也应出现确认卡片。
+4. 点击允许后才会显示读取结果。
 
-手测产生的 manual-permission-test.txt 是临时文件，测试后可以手动删除，不要提交到 Git。
+### 3. 测试自动允许
+
+1. 选择“自动允许”。
+2. 让模型创建 manual-auto-test.txt。
+3. 不应出现确认卡片，工具会直接执行。
+4. 测完手动删除两个临时文件，不要提交。
+
+不要用真实系统破坏命令做手测；硬拦截由自动化测试覆盖。
 
 ## 自动测试
-
-完整检查：
 
 ~~~powershell
 npm run test:all
 npm run test:electron
 ~~~
 
-Electron 测试使用临时项目和离线模型，不读取真实 API Key，也不产生 API 费用。它会验证：
+test:all 检查三种模式、硬拦截、路径沙箱、Bridge 事件和 reducer。test:electron 启动真实桌面进程，依次验证默认确认、只读也询问、自动执行和无错误退出；它使用临时目录和离线模型，不读取 API Key。
 
-~~~text
-请求 write_file
-→ 看见权限卡片
-→ 允许前临时文件不存在
-→ 点击允许
-→ 工具完成
-→ 文件内容正确
-→ 关闭 Electron 不出现主进程错误
-~~~
-
-自动化测试文件由 .gitignore 排除，不加入 Git。
+测试文件由 .gitignore 排除，不加入 Git。
 
 ## 常见坑
 
-- 先执行再询问：权限确认必须位于工具处理函数之前。
-- 页面只显示按钮却没有暂停 Agent：后端必须 await Future。
-- 连续点击发送两次决定：点击后要立刻禁用按钮。
-- permission.resolved 使用自己的 request_id：更新工具卡片时应读取 payload 中的 target_request_id。
-- 拒绝时抛程序异常：应返回 is_error=true 的工具结果，让模型继续。
-- tool_result 换了新 ID：必须沿用原 tool_use_id。
-- Plan 模式漏拦写工具：即使模型猜出隐藏工具名，执行入口仍要拒绝。
-- 开放工具早于 UI：会让 Agent 永久等待无法到达的确认回复。
+- 把权限判断放在执行之后：文件已经修改，再询问没有意义。
+- 认为自动允许等于关闭安全：DENY 必须优先于模式判断。
+- 把“安全 Git 命令”写成 git *：git push、git reset 等操作会被误放行。
+- 只在 UI 禁用按钮：真正规则必须由 Python 后端执行。
+- 只核对 tool_use_id：旧任务的按钮可能误操作新任务，还要核对聊天 ID。
+- 拒绝时抛异常：应返回错误 ToolResult，让模型能够继续。
+- 把 Plan 和权限模式混在一起：一个管工具范围，一个管是否询问。
 
 ## 变更记录
 
-- 第 1 步：实现 ALLOW、DENY、ASK、硬拦截和路径沙箱。
-- 第 2 步：新增 write_file、edit_file、bash，打通 Agent 与 Bridge 的权限等待。
-- 第 3 步：接通 Electron Main、Preload、React reducer 和确认卡片，并正式注册三个工具。
+- 第 1 步：实现 ALLOW、DENY、ASK、危险命令硬拦截和路径沙箱。
+- 第 2 步：新增 write_file、edit_file、bash，打通 Agent 的异步权限等待。
+- 第 3 步：接通 Electron、Preload、React reducer 和确认卡片。
+- 第 4 步：完成三种权限模式、精确安全规则、界面切换和全链路测试。
 
 ## 自测题与答案
 
-**问：为什么 permission_request 要更新已有工具卡片，而不是新建消息？**
+**问：自动允许为什么仍可能返回 DENY？**
 
-答：tool_use 和 permission_request 描述的是同一次调用。使用同一个 tool_use_id 更新原卡片，用户更容易看懂，也不会出现两张重复卡片。
+答：硬拦截和路径沙箱先执行。自动允许只把通过安全底线的普通调用从 ASK 变成 ALLOW。
 
-**问：为什么点击按钮后不能立刻认为工具执行成功？**
+**问：每次都询问为什么连 read_file 也弹卡片？**
 
-答：按钮只代表用户作出决定。Bridge 可能拒绝过期决定，工具本身也可能执行失败；最终状态要以 permission.resolved 和 tool_result 为准。
+答：这个模式用于观察或审计每一次工具调用，所以通过安全检查的只读工具也返回 ASK。
 
-**问：用户拒绝后为什么还会有下一轮 LLM 请求？**
+**问：为什么 git status 可以直接执行，git push 不行？**
 
-答：拒绝是有价值的工具结果。模型需要知道操作没有发生，才能解释、调整方案或询问用户。
+答：规则只精确列出少量只读命令。git push 不在规则中，默认模式下仍需用户确认。
 
-**问：点击停止时 Agent 正在等待权限会怎样？**
+**问：为什么页面切换后要等待 permission_mode.changed？**
 
-答：cancel() 除了设置取消标记，还会唤醒 Future。Agent 退出当前循环、关闭工具卡片，但程序仍可继续聊天。
+答：真正执行规则在 Python。只有后端确认成功后更新界面，页面才不会显示一个实际上尚未生效的模式。
+
+**问：拒绝后为什么还有第 2 轮 LLM？**
+
+答：拒绝会成为 is_error=true 的 tool_result。模型需要看到结果，才能解释失败或调整方案。
 
 **问：第五章结束了吗？**
 
-答：还差第 4 步：加入简单的细粒度权限规则和整体权限模式，完成五层防线中的第 3、4 层。
+答：结束了。下一章是 MCP：先抽象 transport，再接通一个最小 Server 和 ToolRegistry。

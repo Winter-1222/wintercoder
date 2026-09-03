@@ -4,6 +4,7 @@ export const PROTOCOL_VERSION = 1
 
 export type BridgeStatus = 'starting' | 'ready' | 'offline' | 'error'
 export type AgentMode = 'plan' | 'do'
+export type PermissionMode = 'confirm_edits' | 'ask_all' | 'auto_allow'
 
 export interface BridgeState {
   status: BridgeStatus
@@ -24,6 +25,7 @@ export interface JixueDesktopApi {
   cancelChat: (requestId: string) => Promise<void>
   respondPermission: (requestId: string, toolUseId: string, allow: boolean) => Promise<void>
   setAgentMode: (mode: AgentMode) => Promise<void>
+  setPermissionMode: (mode: PermissionMode) => Promise<void>
   getBridgeState: () => Promise<BridgeState>
   onBridgeEvent: (listener: (event: BridgeEnvelope) => void) => () => void
   onBridgeState: (listener: (state: BridgeState) => void) => () => void

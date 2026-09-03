@@ -1,6 +1,6 @@
 /** React 聊天状态；reducer 只做“旧状态 + 事件 = 新状态”。 */
 
-import type { AgentMode, BridgeState } from '../../shared/protocol'
+import type { AgentMode, BridgeState, PermissionMode } from '../../shared/protocol'
 
 export type PermissionStatus =
   | 'pending'
@@ -34,6 +34,7 @@ export interface ChatState {
   iteration: number
   model: string
   mode: AgentMode
+  permissionMode: PermissionMode
   usage: { inputTokens: number; outputTokens: number }
 }
 
@@ -41,6 +42,7 @@ export type ChatAction =
   | { type: 'bridge_changed'; state: BridgeState }
   | { type: 'model_changed'; model: string }
   | { type: 'mode_changed'; mode: AgentMode }
+  | { type: 'permission_mode_changed'; mode: PermissionMode }
   | { type: 'request_started'; requestId: string; text: string; startedAt: number }
   | { type: 'cancel_requested'; requestId: string }
   | { type: 'cancel_failed'; requestId: string }
@@ -104,6 +106,7 @@ export const initialChatState: ChatState = {
   iteration: 0,
   model: 'fake-jixue',
   mode: 'do',
+  permissionMode: 'confirm_edits',
   usage: { inputTokens: 0, outputTokens: 0 }
 }
 
@@ -141,6 +144,9 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     case 'mode_changed':
       // 后端确认后再切换高亮，页面状态不会领先于 Agent 的真实模式。
       return { ...state, mode: action.mode }
+    case 'permission_mode_changed':
+      // 与 Agent 模式一样，只有收到 Python 的确认事件后才更新选择框。
+      return { ...state, permissionMode: action.mode }
     case 'request_started':
       // 先放入用户消息和空的 AI 消息，后续流式文字会追加到这个空位置。
       return {

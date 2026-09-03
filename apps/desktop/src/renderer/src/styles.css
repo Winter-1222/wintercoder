@@ -319,6 +319,24 @@ button, textarea { font: inherit; }
   box-shadow: 0 1px 3px rgb(0 0 0 / 10%);
 }
 
+.permission-mode-select {
+  height: 28px;
+  padding: 0 26px 0 9px;
+  border: 1px solid #deded9;
+  border-radius: 8px;
+  outline: 0;
+  background: #f4f4f1;
+  color: #555550;
+  font-size: 11px;
+}
+
+.permission-mode-select:focus-visible {
+  border-color: #78919a;
+  box-shadow: 0 0 0 2px rgb(120 145 154 / 18%);
+}
+
+.permission-mode-select:disabled { opacity: 0.45; }
+
 .run-status {
   display: flex;
   gap: 12px;

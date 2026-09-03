@@ -3,7 +3,7 @@
 import { app, BrowserWindow, ipcMain } from 'electron'
 import { join, resolve } from 'node:path'
 
-import type { AgentMode } from '../shared/protocol'
+import type { AgentMode, PermissionMode } from '../shared/protocol'
 import { PythonBridge } from './bridge-process'
 
 let mainWindow: BrowserWindow | null = null
@@ -88,6 +88,13 @@ function registerIpc(): void {
     if (!validSender(event)) throw new Error('拒绝未知窗口')
     if (mode !== 'plan' && mode !== 'do') throw new Error('模式只能是 plan 或 do')
     bridge?.setAgentMode(mode as AgentMode)
+  })
+  ipcMain.handle('jixue:set-permission-mode', (event, mode: unknown) => {
+    if (!validSender(event)) throw new Error('拒绝未知窗口')
+    if (mode !== 'confirm_edits' && mode !== 'ask_all' && mode !== 'auto_allow') {
+      throw new Error('权限模式无效')
+    }
+    bridge?.setPermissionMode(mode as PermissionMode)
   })
 }
 

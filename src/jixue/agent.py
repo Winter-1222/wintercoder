@@ -29,7 +29,12 @@ from jixue.llm.base import (
     LLMStreamEvent,
     ToolDefinition,
 )
-from jixue.permission import PermissionCheck, PermissionDecision, evaluate_permission
+from jixue.permission import (
+    PermissionCheck,
+    PermissionDecision,
+    PermissionMode,
+    evaluate_permission,
+)
 from jixue.prompt import build_system_prompt, build_system_reminder
 from jixue.tools import ToolContext, ToolRegistry, ToolResult
 
@@ -88,6 +93,7 @@ class Agent:
         self._cancel_event = asyncio.Event()
         self._is_running = False
         self._mode = AgentMode.DO
+        self._permission_mode = PermissionMode.CONFIRM_EDITS
         # Agent 等待用户确认时，Bridge 会通过这个 Future 把“允许/拒绝”送回来。
         self._permission_tool_use_id: str | None = None
         self._permission_future: asyncio.Future[bool] | None = None
@@ -110,6 +116,17 @@ class Agent:
         if self._is_running:
             raise RuntimeError("任务运行中不能切换模式")
         self._mode = mode
+
+    @property
+    def permission_mode(self) -> PermissionMode:
+        return self._permission_mode
+
+    def set_permission_mode(self, mode: PermissionMode) -> None:
+        """切换权限策略；任务运行中继续沿用本轮开始时的策略。"""
+
+        if self._is_running:
+            raise RuntimeError("任务运行中不能切换权限模式")
+        self._permission_mode = mode
 
     def cancel(self) -> bool:
         """请求停止当前任务；返回 False 表示此刻没有正在运行的任务。"""
@@ -187,6 +204,7 @@ class Agent:
         chunks: list[str] = []
         turn_usage = Usage()
         mode = self._mode
+        permission_mode = self._permission_mode
         self._conversation.add_user(user_text.strip())
 
         try:
@@ -195,6 +213,7 @@ class Agent:
                 build_system_reminder,
                 self._tool_context.project_root,
                 mode.value,
+                permission_mode.value,
             )
             history = _history_with_reminder(
                 self._conversation.to_api_format(),
@@ -322,7 +341,7 @@ class Agent:
                     executions: list[tuple[ToolResult, int] | None] = [None] * len(batch)
                     ready_calls: list[tuple[int, LLMStreamEvent]] = []
                     for index, call in enumerate(batch):
-                        preflight = self._check_tool_call(call, mode)
+                        preflight = self._check_tool_call(call, mode, permission_mode)
                         if isinstance(preflight, ToolResult):
                             executions[index] = (preflight, 0)
                             continue
@@ -527,6 +546,7 @@ class Agent:
         self,
         call: LLMStreamEvent,
         mode: AgentMode,
+        permission_mode: PermissionMode,
     ) -> PermissionCheck | ToolResult:
         """在产生副作用前完成格式、工具存在性、参数、模式和权限检查。"""
 
@@ -541,7 +561,12 @@ class Agent:
         if mode is AgentMode.PLAN and not tool.is_read_only():
             # 即使模型猜出了未展示的写工具名，也会在真正执行前被第二层保护拦住。
             return ToolResult("Plan 模式只允许使用只读工具", is_error=True)
-        return evaluate_permission(self._tool_context.project_root, tool, call.tool_input)
+        return evaluate_permission(
+            self._tool_context.project_root,
+            tool,
+            call.tool_input,
+            permission_mode,
+        )
 
     def _begin_permission(self, tool_use_id: str) -> asyncio.Future[bool]:
         """先建立等待对象再发事件，避免 UI 很快回复时丢失决定。"""

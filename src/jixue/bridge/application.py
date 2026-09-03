@@ -9,6 +9,7 @@ from jixue import __version__
 from jixue.agent import Agent, AgentMode
 from jixue.domain.conversation import Message
 from jixue.domain.events import Envelope
+from jixue.permission import PermissionMode
 
 
 class BridgeApplication:
@@ -37,6 +38,7 @@ class BridgeApplication:
                     "backend_version": __version__,
                     "model": self._agent.model_name,
                     "mode": self._agent.mode.value,
+                    "permission_mode": self._agent.permission_mode.value,
                     "capabilities": [
                         "stream_text",
                         "tool_use",
@@ -46,6 +48,7 @@ class BridgeApplication:
                         "loop_complete",
                         "cancel",
                         "permission",
+                        "permission_mode",
                         "mode",
                     ],
                 },
@@ -77,6 +80,36 @@ class BridgeApplication:
                     command.request_id,
                     0,
                     {"mode": mode.value},
+                )
+        elif command.type == "permission.mode":
+            raw_mode = command.payload.get("mode")
+            try:
+                permission_mode = (
+                    PermissionMode(raw_mode) if isinstance(raw_mode, str) else None
+                )
+            except ValueError:
+                permission_mode = None
+            if permission_mode is None:
+                yield self._error(
+                    command.request_id,
+                    "invalid_permission_mode",
+                    "权限模式无效",
+                    scope="permission_mode",
+                )
+            elif self._active_request_id is not None:
+                yield self._error(
+                    command.request_id,
+                    "permission_mode_busy",
+                    "任务运行中不能切换权限模式",
+                    scope="permission_mode",
+                )
+            else:
+                self._agent.set_permission_mode(permission_mode)
+                yield Envelope.create(
+                    "permission_mode.changed",
+                    command.request_id,
+                    0,
+                    {"mode": permission_mode.value},
                 )
         elif command.type == "chat.send":
             text = command.payload.get("text")
