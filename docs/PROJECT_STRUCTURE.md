@@ -22,7 +22,7 @@ myAgent/
 
 | 文件 | 职责 |
 | --- | --- |
-| `src/jixue/agent.py` | Agent 核心：组装提示上下文、保存 Plan/Do 模式、循环调用 LLM、执行工具并判断停止 |
+| `src/jixue/agent.py` | Agent 核心：循环调用 LLM，在工具执行前完成校验和权限等待，再按原顺序回传结果 |
 | `src/jixue/prompt.py` | 生成稳定的七段式 System Prompt，以及每轮动态的模式、时间和 Git 提醒 |
 | `src/jixue/permission.py` | 权限判断核心：危险命令硬拦截、项目路径沙箱和 ALLOW/DENY/ASK 结果 |
 | `src/jixue/domain/conversation.py` | 普通消息、工具内容块、多轮历史，以及完成/取消消息的 API 前清洗 |
@@ -32,7 +32,7 @@ myAgent/
 | `src/jixue/llm/config.py` | 从 `models.yaml` 和环境中生成四字段配置 |
 | `src/jixue/llm/adapters/anthropic_client.py` | 唯一接触 Anthropic SDK，把 system、messages、tools 发给协议端点并翻译流事件 |
 | `src/jixue/bridge/bootstrap.py` | 读取项目根目录 `.env`，选择 Fake 或真实 LLM |
-| `src/jixue/bridge/application.py` | 转发模式、聊天和取消命令，并为 Agent 事件包装信封 |
+| `src/jixue/bridge/application.py` | 转发模式、聊天、取消和权限回复，并为 Agent 事件包装信封 |
 | `src/jixue/bridge/server.py` | 从 stdin 收 JSON，从 stdout 发 JSON |
 | `src/jixue/bridge/__main__.py` | 让 `python -m jixue.bridge` 能启动 |
 | `src/jixue/tools/base.py` | 工具合同、ToolResult 和通用 BaseTool |
@@ -40,6 +40,8 @@ myAgent/
 | `src/jixue/tools/read_file.py` | 读取项目内 UTF-8 文本文件 |
 | `src/jixue/tools/glob.py` | 按 glob 模式查找项目内文件路径 |
 | `src/jixue/tools/grep.py` | 在项目文本文件中搜索字面内容并返回行号 |
+| `src/jixue/tools/write_tools.py` | write_file 整体写入文件；edit_file 只替换唯一匹配的文字 |
+| `src/jixue/tools/bash.py` | 在项目根目录执行 PowerShell/Bash，限制时长、输出并移除常见密钥环境变量 |
 | `src/jixue/tools/__init__.py` | 工具层公开导入入口 |
 
 `agent.py` 是现在最先阅读的核心；`domain` 不知道 Electron 和 Anthropic；`adapters` 藏住外部 SDK；`bridge` 只负责连接桌面端。

@@ -1,138 +1,180 @@
 # 第 5 章：五层权限防御
 
-本章目标是让 Agent 在执行工具前先判断风险，不能只靠 System Prompt 中一句“请小心”。本章分三步完成；当前完成第 1 步。
+本章让 Agent 在工具真正运行前先判断风险。共分三步；现在已经完成第 2 步：后端能拦截、询问、等待决定，再把结果交还给模型。确认卡片界面留到第 3 步。
 
 ## 当前成果
 
-- 新增 `src/jixue/permission.py`，集中处理权限判断。
-- 判断结果固定为 `ALLOW`、`DENY`、`ASK`，避免到处写真假判断。
-- 明显会破坏系统或整个磁盘的命令直接 `DENY`。
-- 文件路径和搜索模式不能越过项目目录。
-- 项目内只读工具默认 `ALLOW`。
-- 可能修改状态的工具默认 `ASK`，留给后面的确认界面处理。
-- 当前判断器尚未接入 Agent，因此本步不会改变现有工具行为。
+- permission.py 给每个工具调用返回 ALLOW、DENY 或 ASK。
+- Agent 在工具处理函数运行前依次检查：JSON 错误、工具存在性、参数、Plan 模式、权限。
+- 新增 write_file、edit_file、bash 三个会改变状态的工具。
+- ASK 会产生 permission_request；Bridge 接收 permission.respond 后唤醒 Agent。
+- 用户拒绝、路径越界和危险命令都变成 is_error=true 的工具结果，Agent 不会崩溃。
+- 点击停止也能唤醒正在等待确认的 Agent。
+- 为避免当前页面没有确认按钮时卡住，三个新工具暂未注册到正式桌面端；第 3 步连 UI 时再注册。
 
 ## 推荐阅读顺序
 
-1. `src/jixue/permission.py`：先看三个结果，再看 `evaluate_permission()`。
-2. 同一文件中的 `resolve_project_path()`：理解路径沙箱。
-3. `src/jixue/tools/base.py`：看判断器使用的工具权限信息从哪里来。
-4. `src/jixue/agent.py`：暂时只需找到 `_execute_tool_call()`；下一步会在这里接入。
+1. src/jixue/permission.py：看 evaluate_permission() 怎样得到三种决定。
+2. src/jixue/tools/write_tools.py：看完整写入和精确替换。
+3. src/jixue/tools/bash.py：看命令怎样在项目目录执行。
+4. src/jixue/agent.py：搜索 _check_tool_call()，再从 permission_request 往下读。
+5. src/jixue/bridge/application.py：搜索 permission.respond，看 UI 的决定怎样送回来。
+6. src/jixue/tools/base.py：最后理解 BaseTool 为什么能统一校验和包装错误。
 
-## 五层防线与当前进度
+## 三种权限结果
 
-| 层级 | 作用 | 进度 |
+| 结果 | Agent 怎么做 | 例子 |
 | --- | --- | --- |
-| 1. 危险命令硬拦截 | 灾难命令绝对拒绝 | 第 1 步已完成核心判断 |
-| 2. 项目路径沙箱 | 文件操作不能离开项目 | 第 1 步已完成核心判断 |
-| 3. 权限规则 | 例如只允许 `git status` | 后续完成 |
-| 4. 权限模式 | 全部放行、审批编辑、逐一确认 | 后续完成 |
-| 5. HITL | 页面让用户允许或拒绝 | 后续完成 |
+| ALLOW | 直接执行 | 项目内 read_file |
+| DENY | 不执行，生成失败的 tool_result | 路径越界、rm -rf / |
+| ASK | 暂停当前调用，等待用户决定 | write_file、edit_file、普通 bash |
 
-黑名单不可能列出所有危险写法，所以第一层只是最快的硬闸门，不能替代后面四层。
+DENY 和用户拒绝都不是程序异常。模型会在下一轮看到失败原因，可以换方案或向用户解释。
 
-## 一次权限判断怎样运行
+## 一条需要确认的消息怎样跑起来
 
-当前独立判断器的链路是：
+假设模型想创建 notes/todo.md，完整链路是：
 
-```text
-工具 + 输入参数
-  → 如果是 shell：检查是否命中灾难命令
-      → 命中：DENY
-  → 如果是 file/search：检查 path 或 pattern
-      → 越过项目目录：DENY
-  → 工具是否只读
-      → 是：ALLOW
-      → 否：ASK
-```
+~~~text
+用户发送“创建一个待办文件”
+  → 第 1 轮 LLM 返回 tool_use
+       id = tool_123
+       name = write_file
+       input = {path, content}
+  → Agent._check_tool_call()
+       1. tool_use JSON 是否完整
+       2. 工具是否存在
+       3. 参数是否合法
+       4. Plan 模式是否允许
+       5. evaluate_permission() 返回 ASK
+  → Agent 先创建一个 Future，再发 permission_request
+  → Bridge 给 Electron 发送 permission_request
+  → Agent 暂停在 await，不会偷偷执行 write_file
+  → 用户选择允许或拒绝
+  → Electron 发送 permission.respond
+       target_request_id = 当前聊天请求
+       tool_use_id = tool_123
+       allow = true 或 false
+  → Bridge 同时核对聊天 ID 和工具调用 ID
+  → Agent.respond_permission() 填入 Future，Agent 被唤醒
+       允许：执行 write_file
+       拒绝：生成“用户拒绝”的错误 ToolResult
+  → tool_result 使用原来的 tool_123
+  → 第 2 轮 LLM 收到工具结果并给最终回复
+  → loop_complete，输入框恢复
+~~~
 
-对应的核心代码可以简化为：
+Future 可以先理解成一个“暂时没有答案的盒子”。Agent await 这个盒子时不会占着 CPU 空转；Bridge 收到用户选择后，把 true 或 false 放进去，Agent 才继续。
 
-```python
-if 是灾难命令:
-    return DENY
-if 路径越过项目:
-    return DENY
-if tool.is_read_only():
-    return ALLOW
-return ASK
-```
+一定要先创建 Future 再发送 permission_request。否则页面回复很快时，回复可能先到，而 Agent 还没有准备好接收。
 
-例如：
+## ALLOW、DENY、ASK 三条分支
 
-| 请求 | 结果 | 原因 |
-| --- | --- | --- |
-| `read_file(path="README.md")` | `ALLOW` | 项目内只读 |
-| `read_file(path="../secret.txt")` | `DENY` | 离开项目目录 |
-| `bash(command="rm -rf /")` | `DENY` | 系统级灾难命令 |
-| `bash(command="git status")` | `ASK` | 还没有配置细粒度放行规则 |
-| `edit_file(path="README.md")` | `ASK` | 会修改项目内容 |
+核心逻辑可以缩成：
 
-## 路径沙箱在检查什么
+~~~python
+check = evaluate_permission(project_root, tool, tool_input)
 
-`resolve_project_path()` 先得到项目根目录和目标路径的绝对地址，再检查目标是否仍在根目录下面：
+if check.decision is DENY:
+    result = ToolResult(check.reason, is_error=True)
+elif check.decision is ASK:
+    allowed = await wait_for_user()
+    result = await tool.execute(...) if allowed else denied_result
+else:
+    result = await tool.execute(...)
+~~~
 
-```text
-项目根目录 E:\project
-  + README.md       → E:\project\README.md       → 允许
-  + ..\secret.txt  → E:\secret.txt              → 拒绝
-```
+真正代码还会保持多个工具结果的原顺序。只读安全工具仍可并发；write_file、edit_file 和 bash 默认 is_concurrency_safe() 为 false，所以各自串行执行。
 
-这里使用解析后的真实路径，而不是简单搜索字符串 `..`，因此也能处理绝对路径和部分符号链接情况。
+## 三个新增工具
 
-## 启动和测试
+### write_file
 
-本步没有 UI 变化。仍可启动现有项目确认读工具不受影响：
+接收 path 和 content，创建父目录后写入 UTF-8 文件。目标已存在时会整体覆盖，所以必须确认。单次内容上限为 1,000,000 字符。
 
-```powershell
+### edit_file
+
+接收 path、old_text、new_text。只有 old_text 在文件中恰好出现一次才替换；出现 0 次或多次都返回错误，文件保持原样。这样 Agent 不会猜错修改位置。
+
+### bash
+
+在项目根目录执行命令。Windows 使用 PowerShell，macOS/Linux 使用 Bash；最长运行 30 秒，返回内容最多约 50,000 字符。子进程会移除名称中包含 API_KEY、TOKEN、SECRET、PASSWORD 的环境变量。
+
+bash 仍然不是完整操作系统沙箱。第五章的权限判断负责在执行前拦截和询问，不能把工具本身当成绝对安全边界。
+
+## 五层防线进度
+
+| 层级 | 当前状态 |
+| --- | --- |
+| 1. 灾难命令硬拦截 | 已接入 Agent，命中后不询问也不执行 |
+| 2. 项目路径沙箱 | 已接入 Agent，文件和 glob 不能越界 |
+| 3. 细粒度权限规则 | 下一步和权限模式一起做最小配置 |
+| 4. 整体权限模式 | 下一步先完成默认“修改需确认”界面 |
+| 5. HITL 人工确认 | 后端链路已完成，页面按钮待第 3 步 |
+
+grep 的 pattern 是要搜索的文字，不是文件路径。本步修复了把 ../误当成 grep 越界路径的问题；glob 的 pattern 才需要做路径模式检查。
+
+## 启动与手动测试
+
+先验证原有桌面端没有退化：
+
+~~~powershell
 npm run dev
-```
+~~~
 
-然后让模型读取 `README.md`，应继续正常出现读文件工具卡片和回复。
+让模型读取 README.md。应正常显示读取工具卡片并完成回复。此时页面还看不到三个写工具，这是刻意的：没有允许/拒绝按钮前，正式注册会让消息一直等待。
 
-查看权限判断的全部场景：
+查看本步后端闭环的逐项结果：
 
-```powershell
-conda run --no-capture-output -n mycoder pytest tests/test_permission.py -v
-```
+~~~powershell
+conda run --no-capture-output -n mycoder pytest tests/bridge/test_permission_flow.py -v
+~~~
 
-预期 13 个测试通过。测试会覆盖项目内路径、越界路径、普通命令，以及 Unix 和 Windows 灾难命令。
+应看到 7 个测试通过，分别覆盖：
+
+- 允许后才写入，并把相同 tool_use_id 送回模型；
+- 拒绝后不写入，Agent 仍能进入下一轮；
+- 灾难命令不询问且处理函数从未运行；
+- 等待确认时可以取消；
+- write、edit、bash 的最小成功路径；
+- edit 遇到重复文字时不修改；
+- grep 搜索文字不会被误判成路径。
+
+测试产生的文件只在 pytest 临时目录，测试结束后不会污染项目。
 
 ## 常见坑
 
-- 只靠提示词约束模型：提示词会被误解，真正执行前必须由代码判断。
-- 把所有命令都放进黑名单：黑名单永远列不全，所以还需要规则、模式和人工确认。
-- 只检查路径里有没有 `..`：绝对路径和符号链接仍可能越界，应该解析后再比较。
-- 把 `ASK` 当成 `ALLOW`：当前它只代表“以后需要询问用户”，还没有执行许可。
-- 权限失败就抛程序异常：后续应把拒绝包装成工具结果，让模型知道操作没有发生。
-- “全部放行”绕过硬拦截：以后即使增加该模式，第一、二层也必须始终生效。
-
-## 本步完成边界
-
-现在只有独立、可测试的权限判断器。还没有 `write_file`、`edit_file`、`bash`，Agent 也还没有调用判断器或等待用户确认。
+- 先执行再询问：确认失去意义；权限判断必须在工具处理函数之前。
+- 只核对 tool_use_id：旧任务可能碰巧留下过期按钮，还要核对 target_request_id。
+- 拒绝时抛异常：这会中断 Agent；应返回 is_error=true 的 tool_result。
+- 拒绝后换一个新 ID：Claude 协议要求 tool_result 对应原 tool_use_id。
+- 参数无效也弹确认：用户允许后仍会失败；所以参数校验放在 ASK 之前。
+- 等待确认时无法停止：cancel() 必须同时设置取消标记并唤醒 Future。
+- 现在就注册写工具：当前 UI 还不能回复确认，会让真实聊天一直卡住。
 
 ## 变更记录
 
-- 第 1 步：加入 `ALLOW/DENY/ASK`、危险命令硬拦截、项目路径沙箱和 13 个本地测试。
+- 第 1 步：实现 ALLOW/DENY/ASK、灾难命令硬拦截和项目路径沙箱。
+- 第 2 步：新增 write_file、edit_file、bash；Agent 和 Bridge 打通权限等待、回复、拒绝、取消及 tool_result 回传。
 
 ## 自测题与答案
 
-**问：为什么不是简单返回 True 或 False？**
+**问：为什么用户拒绝后还要再调用一次 LLM？**
 
-答：因为“必须拒绝”和“可以让用户决定”是两种不同状态。三种结果能明确区分直接执行、绝对拒绝和等待确认。
+答：拒绝也是有价值的工具结果。模型知道操作没有发生后，才能解释原因、改用只读方案或询问用户。
 
-**问：`git status` 为什么暂时是 ASK？**
+**问：为什么 permission.respond 要带两个 ID？**
 
-答：它不是灾难命令，但第三层细粒度规则还没有实现，所以非只读 shell 工具先采用保守结果。
+答：target_request_id 指向哪一条聊天任务，tool_use_id 指向其中哪一次工具调用。两者都匹配才能防止过期按钮误操作。
 
-**问：黑名单已经有 `rm -rf /`，为什么还需要其他防线？**
+**问：为什么 edit_file 要求 old_text 只出现一次？**
 
-答：危险命令有很多变体，黑名单不可能穷举。路径沙箱、权限规则、整体模式和人工确认共同组成纵深防御。
+答：出现多次时无法确定用户想改哪一处。保守地返回错误，比静默改错文件内容更安全。
 
-**问：路径沙箱为什么要调用 `resolve()`？**
+**问：ALLOW 是否代表工具一定成功？**
 
-答：用户传入的是文字路径；解析后才能得到真正目标，再可靠判断它是否位于项目根目录内。
+答：不是。ALLOW 只代表可以尝试执行；文件不存在、命令退出码非零等仍会产生普通工具错误。
 
-**问：这一步为什么没有修改 Agent？**
+**问：这一章现在结束了吗？**
 
-答：先把纯判断规则单独验证，下一步接入执行链路时更容易判断错误来自规则还是 Agent Loop。
+答：还没有。第 3 步要在 Electron 页面展示确认卡片、发送 permission.respond，并在那时把三个新工具注册到正式运行入口。

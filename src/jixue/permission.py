@@ -6,8 +6,11 @@ import re
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from jixue.tools.base import Tool, ToolInput
+if TYPE_CHECKING:
+    # 这里只需要类型提示；运行时导入 tools 会让 write_tools 与本模块互相等待。
+    from jixue.tools.base import Tool, ToolInput
 
 
 class PermissionDecision(StrEnum):
@@ -59,8 +62,9 @@ def evaluate_permission(
             except ValueError as error:
                 return PermissionCheck(PermissionDecision.DENY, str(error))
 
+        # 只有 glob 的 pattern 表示路径；grep 的同名参数是要搜索的普通文字。
         pattern = tool_input.get("pattern")
-        if isinstance(pattern, str):
+        if tool.name() == "glob" and isinstance(pattern, str):
             pattern_path = Path(pattern)
             if pattern_path.is_absolute() or ".." in pattern_path.parts:
                 return PermissionCheck(

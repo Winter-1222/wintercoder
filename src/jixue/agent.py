@@ -29,6 +29,7 @@ from jixue.llm.base import (
     LLMStreamEvent,
     ToolDefinition,
 )
+from jixue.permission import PermissionCheck, PermissionDecision, evaluate_permission
 from jixue.prompt import build_system_prompt, build_system_reminder
 from jixue.tools import ToolContext, ToolRegistry, ToolResult
 
@@ -48,6 +49,7 @@ class AgentEventType(StrEnum):
 
     STREAM_TEXT = "stream_text"
     TOOL_USE = "tool_use"
+    PERMISSION_REQUEST = "permission_request"
     TOOL_RESULT = "tool_result"
     USAGE = "usage"
     TURN_COMPLETE = "turn_complete"
@@ -86,6 +88,9 @@ class Agent:
         self._cancel_event = asyncio.Event()
         self._is_running = False
         self._mode = AgentMode.DO
+        # Agent 等待用户确认时，Bridge 会通过这个 Future 把“允许/拒绝”送回来。
+        self._permission_tool_use_id: str | None = None
+        self._permission_future: asyncio.Future[bool] | None = None
 
     @property
     def model_name(self) -> str:
@@ -112,6 +117,22 @@ class Agent:
         if not self._is_running:
             return False
         self._cancel_event.set()
+        # 如果 Agent 正停在权限确认处，只设置取消标记还不够：还要唤醒等待中的 Future。
+        if self._permission_future is not None and not self._permission_future.done():
+            self._permission_future.set_result(False)
+        return True
+
+    def respond_permission(self, tool_use_id: str, allow: bool) -> bool:
+        """接收 UI 的权限决定；ID 不匹配表示这个确认已经过期。"""
+
+        future = self._permission_future
+        if (
+            future is None
+            or future.done()
+            or tool_use_id != self._permission_tool_use_id
+        ):
+            return False
+        future.set_result(allow)
         return True
 
     async def _stream_llm(
@@ -297,12 +318,73 @@ class Agent:
                             yield _cancelled_tool_event(pending)
                         break
 
-                    # 一个安全批次可以有多个调用；不安全批次永远只有一个调用。
-                    executions = await asyncio.gather(
-                        *(self._execute_tool_call(call, mode) for call in batch)
+                    # 先完成校验和权限判断，只有通过的调用才会进入真正的执行函数。
+                    executions: list[tuple[ToolResult, int] | None] = [None] * len(batch)
+                    ready_calls: list[tuple[int, LLMStreamEvent]] = []
+                    for index, call in enumerate(batch):
+                        preflight = self._check_tool_call(call, mode)
+                        if isinstance(preflight, ToolResult):
+                            executions[index] = (preflight, 0)
+                            continue
+                        if preflight.decision is PermissionDecision.DENY:
+                            executions[index] = (
+                                ToolResult(f"权限拒绝：{preflight.reason}", is_error=True),
+                                0,
+                            )
+                            continue
+                        if preflight.decision is PermissionDecision.ASK:
+                            waiter = self._begin_permission(call.tool_use_id)
+                            tool = self._tools.get(call.tool_name)
+                            assert tool is not None
+                            yield _event(
+                                AgentEventType.PERMISSION_REQUEST,
+                                id=call.tool_use_id,
+                                name=call.tool_name,
+                                input=dict(call.tool_input),
+                                reason=preflight.reason,
+                                is_destructive=tool.is_destructive(),
+                            )
+                            try:
+                                allowed = await waiter
+                            finally:
+                                self._clear_permission()
+                            if self._cancel_event.is_set():
+                                cancelled = True
+                                stop_reason = "cancelled"
+                                for pending in pending_tool_calls:
+                                    yield _cancelled_tool_event(pending)
+                                break
+                            if not allowed:
+                                executions[index] = (
+                                    ToolResult("用户拒绝了本次工具调用", is_error=True),
+                                    0,
+                                )
+                                continue
+                        ready_calls.append((index, call))
+
+                    if cancelled:
+                        break
+                    completed = await asyncio.gather(
+                        *(self._execute_tool_call(call) for _, call in ready_calls)
                     )
-                    # gather 的返回顺序与输入顺序一致，API 历史不会因为并发而乱序。
-                    for call, (result, duration_ms) in zip(batch, executions, strict=True):
+                    for (index, _), execution in zip(
+                        ready_calls,
+                        completed,
+                        strict=True,
+                    ):
+                        executions[index] = execution
+                    if any(execution is None for execution in executions):
+                        raise RuntimeError("工具批次存在未处理的调用")
+                    resolved_executions = [
+                        execution for execution in executions if execution is not None
+                    ]
+
+                    # 即使安全工具并发完成，也按模型原来的调用顺序写回对话历史。
+                    for call, (result, duration_ms) in zip(
+                        batch,
+                        resolved_executions,
+                        strict=True,
+                    ):
                         # 只有“工具不存在或被禁用”才累计；合法工具会打断连续计数。
                         tool_is_invalid = (
                             not call.tool_error and self._tools.get(call.tool_name) is None
@@ -438,28 +520,56 @@ class Agent:
                 scope="request",
             )
         finally:
+            self._clear_permission()
             self._is_running = False
+
+    def _check_tool_call(
+        self,
+        call: LLMStreamEvent,
+        mode: AgentMode,
+    ) -> PermissionCheck | ToolResult:
+        """在产生副作用前完成格式、工具存在性、参数、模式和权限检查。"""
+
+        if call.tool_error:
+            return ToolResult(call.tool_error, is_error=True)
+        tool = self._tools.get(call.tool_name)
+        if tool is None:
+            return ToolResult(f"工具不存在或未启用：{call.tool_name}", is_error=True)
+        input_error = tool.validate_input(call.tool_input)
+        if input_error:
+            return ToolResult(f"工具参数错误：{input_error}", is_error=True)
+        if mode is AgentMode.PLAN and not tool.is_read_only():
+            # 即使模型猜出了未展示的写工具名，也会在真正执行前被第二层保护拦住。
+            return ToolResult("Plan 模式只允许使用只读工具", is_error=True)
+        return evaluate_permission(self._tool_context.project_root, tool, call.tool_input)
+
+    def _begin_permission(self, tool_use_id: str) -> asyncio.Future[bool]:
+        """先建立等待对象再发事件，避免 UI 很快回复时丢失决定。"""
+
+        if self._permission_future is not None:
+            raise RuntimeError("已有工具正在等待权限确认")
+        self._permission_tool_use_id = tool_use_id
+        self._permission_future = asyncio.get_running_loop().create_future()
+        return self._permission_future
+
+    def _clear_permission(self) -> None:
+        """清掉一次性确认状态，旧按钮再次点击时就会被拒绝。"""
+
+        self._permission_tool_use_id = None
+        self._permission_future = None
 
     async def _execute_tool_call(
         self,
         call: LLMStreamEvent,
-        mode: AgentMode,
     ) -> tuple[ToolResult, int]:
-        """执行一个工具调用，并把耗时和普通失败一起返回。"""
+        """执行已经通过权限检查的工具；确认等待时间不计入工具耗时。"""
 
         started_at = perf_counter()
-        tool = self._tools.get(call.tool_name)
-        if call.tool_error:
-            result = ToolResult(call.tool_error, is_error=True)
-        elif mode is AgentMode.PLAN and tool is not None and not tool.is_read_only():
-            # 即使模型猜出了未展示的写工具名，也会在真正执行前被第二层保护拦住。
-            result = ToolResult("Plan 模式只允许使用只读工具", is_error=True)
-        else:
-            result = await self._tools.execute(
-                call.tool_name,
-                self._tool_context,
-                call.tool_input,
-            )
+        result = await self._tools.execute(
+            call.tool_name,
+            self._tool_context,
+            call.tool_input,
+        )
         duration_ms = round((perf_counter() - started_at) * 1000)
         return result, duration_ms
 

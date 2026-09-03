@@ -45,6 +45,7 @@ class BridgeApplication:
                         "turn_complete",
                         "loop_complete",
                         "cancel",
+                        "permission",
                         "mode",
                     ],
                 },
@@ -107,6 +108,39 @@ class BridgeApplication:
                     "accepted": accepted,
                 },
             )
+        elif command.type == "permission.respond":
+            target = command.payload.get("target_request_id")
+            tool_use_id = command.payload.get("tool_use_id")
+            allow = command.payload.get("allow")
+            if (
+                not isinstance(target, str)
+                or not isinstance(tool_use_id, str)
+                or not isinstance(allow, bool)
+            ):
+                yield self._error(
+                    command.request_id,
+                    "invalid_permission_response",
+                    "权限回复必须包含 target_request_id、tool_use_id 和布尔值 allow",
+                    scope="permission",
+                )
+            else:
+                # target_request_id 防止旧任务的确认按钮误操作当前任务；
+                # tool_use_id 再精确到本次工具调用，两层都匹配才会唤醒 Agent。
+                accepted = (
+                    target == self._active_request_id
+                    and self._agent.respond_permission(tool_use_id, allow)
+                )
+                yield Envelope.create(
+                    "permission.resolved",
+                    command.request_id,
+                    0,
+                    {
+                        "target_request_id": target,
+                        "tool_use_id": tool_use_id,
+                        "allow": allow,
+                        "accepted": accepted,
+                    },
+                )
         else:
             yield self._error(
                 command.request_id,
