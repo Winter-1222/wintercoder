@@ -12,6 +12,8 @@ function subscribe<T>(channel: string, listener: (value: T) => void): () => void
 const api: JixueDesktopApi = {
   sendChat: (requestId, text) => ipcRenderer.invoke('jixue:send-chat', requestId, text),
   cancelChat: (requestId) => ipcRenderer.invoke('jixue:cancel-chat', requestId),
+  respondPermission: (requestId, toolUseId, allow) =>
+    ipcRenderer.invoke('jixue:respond-permission', requestId, toolUseId, allow),
   setAgentMode: (mode) => ipcRenderer.invoke('jixue:set-agent-mode', mode),
   getBridgeState: () => ipcRenderer.invoke('jixue:get-bridge-state'),
   onBridgeEvent: (listener) => subscribe<BridgeEnvelope>('jixue:bridge-event', listener),

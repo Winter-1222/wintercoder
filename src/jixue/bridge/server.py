@@ -13,9 +13,12 @@ from jixue.bridge.bootstrap import BridgeBootstrapError, create_runtime_llm
 from jixue.domain.events import Envelope, ProtocolError
 from jixue.tools import (
     ToolRegistry,
+    create_bash_tool,
+    create_edit_file_tool,
     create_glob_tool,
     create_grep_tool,
     create_read_file_tool,
+    create_write_file_tool,
 )
 
 MAX_LINE_BYTES = 1024 * 1024
@@ -96,6 +99,10 @@ def main() -> None:
     tools.register(create_read_file_tool())
     tools.register(create_glob_tool())
     tools.register(create_grep_tool())
+    # 写入和命令工具只有在权限确认链路就绪后才注册，避免模型绕过用户确认。
+    tools.register(create_write_file_tool())
+    tools.register(create_edit_file_tool())
+    tools.register(create_bash_tool())
     agent = Agent(llm, tools=tools)
     server = BridgeServer(
         BridgeApplication(agent),

@@ -28,12 +28,12 @@ myAgent/
 | `src/jixue/domain/conversation.py` | 普通消息、工具内容块、多轮历史，以及完成/取消消息的 API 前清洗 |
 | `src/jixue/domain/events.py` | Electron 与 Python 之间的一行 JSON 信封 |
 | `src/jixue/llm/base.py` | 霁雪自己的 LLM 接口；统一接收 system、messages、tools 并输出流事件 |
-| `src/jixue/llm/fake.py` | 离线模拟 LLM；`/read` 测一次工具，`/loop` 测两次工具循环 |
+| `src/jixue/llm/fake.py` | 离线模拟 LLM；/read、/loop 测读取，/write 只用于权限端到端测试 |
 | `src/jixue/llm/config.py` | 从 `models.yaml` 和环境中生成四字段配置 |
 | `src/jixue/llm/adapters/anthropic_client.py` | 唯一接触 Anthropic SDK，把 system、messages、tools 发给协议端点并翻译流事件 |
 | `src/jixue/bridge/bootstrap.py` | 读取项目根目录 `.env`，选择 Fake 或真实 LLM |
 | `src/jixue/bridge/application.py` | 转发模式、聊天、取消和权限回复，并为 Agent 事件包装信封 |
-| `src/jixue/bridge/server.py` | 从 stdin 收 JSON，从 stdout 发 JSON |
+| `src/jixue/bridge/server.py` | 从 stdin 收 JSON、从 stdout 发 JSON，并注册当前内置工具 |
 | `src/jixue/bridge/__main__.py` | 让 `python -m jixue.bridge` 能启动 |
 | `src/jixue/tools/base.py` | 工具合同、ToolResult 和通用 BaseTool |
 | `src/jixue/tools/registry.py` | 注册、启用、禁用、按名称执行工具，并可只导出只读工具定义 |
@@ -50,13 +50,13 @@ myAgent/
 
 | 文件 | 职责 |
 | --- | --- |
-| `apps/desktop/src/main/index.ts` | 创建窗口、校验模式/聊天/取消 IPC，并启动或关闭 Python |
-| `apps/desktop/src/main/bridge-process.ts` | 启动 Conda 子进程，发送模式/聊天/取消命令并处理 NDJSON |
-| `apps/desktop/src/preload/index.ts` | 只向网页暴露安全的模式、聊天、取消和事件订阅接口 |
+| `apps/desktop/src/main/index.ts` | 创建窗口，校验聊天、取消、模式和权限回复 IPC |
+| `apps/desktop/src/main/bridge-process.ts` | 启动 Conda 子进程，发送聊天、取消、模式和权限命令并处理 NDJSON |
+| `apps/desktop/src/preload/index.ts` | 只向网页暴露白名单中的聊天、取消、模式、权限和订阅接口 |
 | `apps/desktop/src/shared/protocol.ts` | 前后端共用的事件信封和桌面 API 类型 |
-| `apps/desktop/src/renderer/src/App.tsx` | 聊天页面，接收循环事件并展示 Plan/Do、发送和停止按钮 |
-| `apps/desktop/src/renderer/src/state.ts` | reducer：更新模式、工具、轮次、正在停止和已停止状态 |
-| `apps/desktop/src/renderer/src/styles.css` | Codex 风格的聊天、模式切换、工具卡片和停止按钮样式 |
+| `apps/desktop/src/renderer/src/App.tsx` | 聊天页面：翻译 Agent 事件，展示 Plan/Do、工具和权限操作 |
+| `apps/desktop/src/renderer/src/state.ts` | reducer：更新模式、工具、权限确认、轮次、停止和完成状态 |
+| `apps/desktop/src/renderer/src/styles.css` | Codex 风格的聊天、工具、权限卡片和输入区样式 |
 | `apps/desktop/src/renderer/src/main.tsx` | React 页面入口 |
 
 其余 `electron.vite.config.ts`、`tsconfig.json` 和各级 `package.json` 是构建配置，不参与一条消息的业务处理。

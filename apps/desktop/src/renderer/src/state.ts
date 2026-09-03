@@ -2,6 +2,14 @@
 
 import type { AgentMode, BridgeState } from '../../shared/protocol'
 
+export type PermissionStatus =
+  | 'pending'
+  | 'allowing'
+  | 'denying'
+  | 'allowed'
+  | 'denied'
+  | 'expired'
+
 export interface UiMessage {
   id: string
   requestId: string
@@ -11,6 +19,9 @@ export interface UiMessage {
   name?: string
   input?: string
   durationMs?: number
+  permissionStatus?: PermissionStatus
+  permissionReason?: string
+  isDestructive?: boolean
 }
 
 export interface ChatState {
@@ -43,6 +54,27 @@ export type ChatAction =
       error: string
     }
   | {
+      type: 'permission_requested'
+      requestId: string
+      toolUseId: string
+      reason: string
+      isDestructive: boolean
+    }
+  | {
+      type: 'permission_submitted'
+      requestId: string
+      toolUseId: string
+      allow: boolean
+    }
+  | { type: 'permission_submit_failed'; requestId: string; toolUseId: string }
+  | {
+      type: 'permission_resolved'
+      requestId: string
+      toolUseId: string
+      allow: boolean
+      accepted: boolean
+    }
+  | {
       type: 'tool_completed'
       requestId: string
       toolUseId: string
@@ -73,6 +105,19 @@ export const initialChatState: ChatState = {
   model: 'fake-jixue',
   mode: 'do',
   usage: { inputTokens: 0, outputTokens: 0 }
+}
+
+function updateTool(
+  messages: UiMessage[],
+  requestId: string,
+  toolUseId: string,
+  update: (message: UiMessage) => UiMessage
+): UiMessage[] {
+  return messages.map((message) =>
+    message.requestId === requestId && message.id === toolUseId && message.role === 'tool'
+      ? update(message)
+      : message
+  )
 }
 
 function updateAssistant(
@@ -157,6 +202,75 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
             status: action.error ? 'failed' : 'streaming'
           }
         ]
+      }
+    case 'permission_requested':
+      // permission_request 不会新建卡片，而是把已有 tool_use 卡片切换成“等待确认”。
+      return {
+        ...state,
+        messages: updateTool(
+          state.messages,
+          action.requestId,
+          action.toolUseId,
+          (message) => ({
+            ...message,
+            content: '等待你的确认…',
+            permissionStatus: 'pending',
+            permissionReason: action.reason,
+            isDestructive: action.isDestructive
+          })
+        )
+      }
+    case 'permission_submitted':
+      // 点击后立刻禁用两个按钮，防止连续点击重复发送同一次决定。
+      return {
+        ...state,
+        messages: updateTool(
+          state.messages,
+          action.requestId,
+          action.toolUseId,
+          (message) => ({
+            ...message,
+            permissionStatus: action.allow ? 'allowing' : 'denying'
+          })
+        )
+      }
+    case 'permission_submit_failed':
+      // IPC 没发出去时恢复按钮，用户可以再次选择。
+      return {
+        ...state,
+        messages: updateTool(
+          state.messages,
+          action.requestId,
+          action.toolUseId,
+          (message) => ({ ...message, permissionStatus: 'pending' })
+        )
+      }
+    case 'permission_resolved':
+      // accepted=false 说明任务或按钮已经过期，不能继续操作这张卡片。
+      return {
+        ...state,
+        messages: updateTool(
+          state.messages,
+          action.requestId,
+          action.toolUseId,
+          (message) => ({
+            ...message,
+            permissionStatus: action.accepted
+              ? action.allow
+                ? 'allowed'
+                : 'denied'
+              : 'expired',
+            // 如果 tool_result 已经先到，就保留真正结果，不能被稍晚到达的回执覆盖。
+            content:
+              message.status !== 'streaming'
+                ? message.content
+                : !action.accepted
+                  ? '确认已失效'
+                  : action.allow
+                    ? '已允许，正在执行…'
+                    : '已拒绝，正在通知模型…'
+          })
+        )
       }
     case 'tool_completed':
       // tool_use_id 是一次工具调用的唯一编号，用它找到并更新同一张工具卡片。

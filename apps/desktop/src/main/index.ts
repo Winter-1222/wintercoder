@@ -70,6 +70,20 @@ function registerIpc(): void {
     }
     bridge?.cancelChat(requestId)
   })
+  ipcMain.handle(
+    'jixue:respond-permission',
+    (event, requestId: unknown, toolUseId: unknown, allow: unknown) => {
+      if (!validSender(event)) throw new Error('拒绝未知窗口')
+      if (typeof requestId !== 'string' || !requestId.startsWith('req_')) {
+        throw new Error('requestId 无效')
+      }
+      if (typeof toolUseId !== 'string' || !toolUseId || toolUseId.length > 500) {
+        throw new Error('toolUseId 无效')
+      }
+      if (typeof allow !== 'boolean') throw new Error('allow 必须是布尔值')
+      bridge?.respondPermission(requestId, toolUseId, allow)
+    }
+  )
   ipcMain.handle('jixue:set-agent-mode', (event, mode: unknown) => {
     if (!validSender(event)) throw new Error('拒绝未知窗口')
     if (mode !== 'plan' && mode !== 'do') throw new Error('模式只能是 plan 或 do')

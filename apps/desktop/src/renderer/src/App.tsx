@@ -7,12 +7,36 @@ import remarkGfm from 'remark-gfm'
 import type { AgentMode, BridgeEnvelope } from '../../shared/protocol'
 import { chatReducer, initialChatState, type UiMessage } from './state'
 
-function MessageView({ message }: { message: UiMessage }): React.JSX.Element {
+function MessageView({
+  message,
+  onPermission
+}: {
+  message: UiMessage
+  onPermission: (message: UiMessage, allow: boolean) => Promise<void>
+}): React.JSX.Element {
   if (message.role === 'tool') {
+    const permissionBusy =
+      message.permissionStatus === 'allowing' || message.permissionStatus === 'denying'
     const label =
-      message.status === 'streaming' ? '工具执行中' : message.status === 'failed' ? '工具失败' : '工具完成'
+      message.permissionStatus === 'pending'
+        ? '需要确认'
+        : permissionBusy
+          ? '正在提交'
+          : message.status === 'streaming'
+            ? '工具执行中'
+            : message.status === 'failed'
+              ? '工具失败'
+              : '工具完成'
+    const showPermission =
+      message.status === 'streaming' &&
+      (message.permissionStatus === 'pending' || permissionBusy)
+
     return (
-      <article className="tool-message" data-status={message.status}>
+      <article
+        className="tool-message"
+        data-status={message.status}
+        data-permission={message.permissionStatus}
+      >
         <span>{label}</span>
         <div>
           <header>
@@ -20,12 +44,39 @@ function MessageView({ message }: { message: UiMessage }): React.JSX.Element {
             {message.durationMs !== undefined && <small>{message.durationMs} 毫秒</small>}
           </header>
           {message.input && (
-            <details>
+            <details open={showPermission}>
               <summary>查看输入参数</summary>
               <pre>{message.input}</pre>
             </details>
           )}
-          <pre className="tool-output">{message.content}</pre>
+          {showPermission ? (
+            <div className="permission-panel">
+              <div>
+                <strong>{message.isDestructive ? '可能修改项目' : '需要你的许可'}</strong>
+                <p>{message.permissionReason || '此工具需要确认后才能执行。'}</p>
+              </div>
+              <div className="permission-actions">
+                <button
+                  className="permission-deny"
+                  aria-label={'拒绝 ' + message.name}
+                  disabled={permissionBusy}
+                  onClick={() => void onPermission(message, false)}
+                >
+                  {message.permissionStatus === 'denying' ? '拒绝中…' : '拒绝'}
+                </button>
+                <button
+                  className="permission-allow"
+                  aria-label={'允许 ' + message.name}
+                  disabled={permissionBusy}
+                  onClick={() => void onPermission(message, true)}
+                >
+                  {message.permissionStatus === 'allowing' ? '允许中…' : '允许'}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <pre className="tool-output">{message.content}</pre>
+          )}
         </div>
       </article>
     )
@@ -137,6 +188,22 @@ export default function App(): React.JSX.Element {
         input: JSON.stringify(input, null, 2),
         error: text(event.payload.error)
       })
+    } else if (event.type === 'permission_request') {
+      dispatch({
+        type: 'permission_requested',
+        requestId: event.request_id,
+        toolUseId: text(event.payload.id, 'unknown_tool'),
+        reason: text(event.payload.reason, '此工具需要确认后才能执行。'),
+        isDestructive: event.payload.is_destructive === true
+      })
+    } else if (event.type === 'permission.resolved') {
+      dispatch({
+        type: 'permission_resolved',
+        requestId: text(event.payload.target_request_id),
+        toolUseId: text(event.payload.tool_use_id),
+        allow: event.payload.allow === true,
+        accepted: event.payload.accepted === true
+      })
     } else if (event.type === 'tool_result') {
       dispatch({
         type: 'tool_completed',
@@ -203,6 +270,26 @@ export default function App(): React.JSX.Element {
     }
   }
 
+  async function respondPermission(message: UiMessage, allow: boolean): Promise<void> {
+    if (message.permissionStatus !== 'pending') return
+    dispatch({
+      type: 'permission_submitted',
+      requestId: message.requestId,
+      toolUseId: message.id,
+      allow
+    })
+    try {
+      await window.jixue.respondPermission(message.requestId, message.id, allow)
+    } catch (error) {
+      console.error('发送权限决定失败', error)
+      dispatch({
+        type: 'permission_submit_failed',
+        requestId: message.requestId,
+        toolUseId: message.id
+      })
+    }
+  }
+
   async function changeMode(mode: AgentMode): Promise<void> {
     if (state.activeRequestId || state.mode === mode) return
     try {
@@ -242,7 +329,11 @@ export default function App(): React.JSX.Element {
           ) : (
             <div className="message-list">
               {state.messages.map((message) => (
-                <MessageView key={message.id} message={message} />
+                <MessageView
+                  key={message.id}
+                  message={message}
+                  onPermission={respondPermission}
+                />
               ))}
             </div>
           )}

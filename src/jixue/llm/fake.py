@@ -61,6 +61,27 @@ class FakeLLMClient:
                     for block in message.content
                 )
 
+        # 仅供离线端到端测试：/write 路径 内容 会请求真实 write_file，
+        # 后续仍要经过与真实模型完全相同的权限确认和工具执行链路。
+        if latest_user_text.startswith("/write "):
+            path, separator, content = latest_user_text.removeprefix("/write ").partition(" ")
+            has_write_file = any(tool.get("name") == "write_file" for tool in tools)
+            if path and separator and content and has_write_file:
+                usage = Usage(max(1, history_characters // 4), 8)
+                yield LLMStreamEvent(
+                    LLMEventType.TOOL_USE,
+                    tool_use_id="fake_write_1",
+                    tool_name="write_file",
+                    tool_input={"path": path, "content": content},
+                )
+                yield LLMStreamEvent(LLMEventType.USAGE, usage=usage)
+                yield LLMStreamEvent(
+                    LLMEventType.COMPLETE,
+                    usage=usage,
+                    stop_reason="tool_use",
+                )
+                return
+
         if len(loop_paths) == 2 and loop_result_count < 2:
             has_read_file = any(tool.get("name") == "read_file" for tool in tools)
             if has_read_file:

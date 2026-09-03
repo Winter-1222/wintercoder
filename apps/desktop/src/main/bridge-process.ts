@@ -90,6 +90,16 @@ export class PythonBridge {
     this.write('chat.cancel', `cancel_${randomUUID()}`, { target_request_id: requestId })
   }
 
+  respondPermission(requestId: string, toolUseId: string, allow: boolean): void {
+    if (this.state.status !== 'ready') throw new Error('Python Bridge 尚未就绪')
+    // 权限命令有自己的编号，同时指向聊天请求和其中那一次工具调用。
+    this.write('permission.respond', 'permission_' + randomUUID(), {
+      target_request_id: requestId,
+      tool_use_id: toolUseId,
+      allow
+    })
+  }
+
   setAgentMode(mode: AgentMode): void {
     if (this.state.status !== 'ready') throw new Error('Python Bridge 尚未就绪')
     this.write('agent.mode', 'mode_' + randomUUID(), { mode })

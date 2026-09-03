@@ -195,6 +195,60 @@ button, textarea { font: inherit; }
 .tool-message summary { cursor: pointer; }
 .tool-message .tool-output { max-height: 180px; white-space: pre-wrap; }
 .tool-message[data-status='failed'] { border-color: #e2c4bf; background: #fff6f4; }
+.tool-message[data-permission='pending'],
+.tool-message[data-permission='allowing'],
+.tool-message[data-permission='denying'] {
+  border-color: #d9cfb8;
+  background: #fffdf7;
+  box-shadow: 0 6px 20px rgb(77 62 30 / 6%);
+}
+
+.permission-panel {
+  display: flex;
+  gap: 20px;
+  align-items: flex-end;
+  justify-content: space-between;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #e9e0cd;
+}
+
+.permission-panel > div:first-child { min-width: 0; }
+.permission-panel strong { color: #564b35; font-size: 12px; }
+.permission-panel p {
+  margin: 4px 0 0;
+  color: #81745c;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.permission-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 7px;
+}
+
+.permission-actions button {
+  min-width: 58px;
+  height: 29px;
+  padding: 0 11px;
+  border: 1px solid #d8d0c0;
+  border-radius: 7px;
+  background: white;
+  color: #5f5748;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.permission-actions .permission-allow {
+  border-color: #343431;
+  background: #343431;
+  color: white;
+}
+
+.permission-actions button:hover:not(:disabled) { transform: translateY(-1px); }
+.permission-actions button:focus-visible { outline: 2px solid #78919a; outline-offset: 2px; }
+.permission-actions button:disabled { cursor: default; opacity: 0.5; }
 
 .cursor {
   display: inline-block;
@@ -310,4 +364,6 @@ button, textarea { font: inherit; }
 @media (max-width: 960px) {
   .app-shell { grid-template-columns: 190px 1fr; }
   .run-status { gap: 6px; }
+  .permission-panel { align-items: stretch; flex-direction: column; gap: 10px; }
+  .permission-actions { justify-content: flex-end; }
 }
