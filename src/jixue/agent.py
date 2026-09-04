@@ -12,7 +12,7 @@ from time import perf_counter
 from typing import Any
 from uuid import uuid4
 
-from jixue.context import ToolResultStore
+from jixue.context import ActiveContext, ToolResultStore
 from jixue.domain.conversation import (
     APIContentBlock,
     APIMessage,
@@ -221,7 +221,7 @@ class Agent:
                 mode.value,
                 permission_mode.value,
             )
-            history = _history_with_reminder(
+            full_history = _history_with_reminder(
                 self._conversation.to_api_format(),
                 reminder,
             )
@@ -246,6 +246,8 @@ class Agent:
             consecutive_invalid_tools = 0
             cancelled = False
             pending_tool_calls: list[LLMStreamEvent] = []
+            # 这个对象只服务当前任务：保存哪些旧结果已经退出模型视图。
+            active_context = ActiveContext()
 
             # 一轮就是一次 LLM 请求。模型需要工具时，执行后把结果送回下一轮；
             # 模型不再请求工具时，说明它已经给出最终答复，循环自然结束。
@@ -259,7 +261,9 @@ class Agent:
                 tool_calls: list[LLMStreamEvent] = []
                 pending_tool_calls = []
 
-                async for llm_event in self._stream_llm(history, tool_definitions):
+                # full_history 保存原文；active_history 只是本轮发给模型的临时副本。
+                active_history = active_context.build(full_history)
+                async for llm_event in self._stream_llm(active_history, tool_definitions):
                     if llm_event.type == LLMEventType.TEXT:
                         chunks.append(llm_event.text)
                         _append_text(response_blocks, llm_event.text)
@@ -469,8 +473,8 @@ class Agent:
                 if invalid_tool_limit_reached:
                     break
                 # 工具结果必须紧跟模型的 tool_use，并使用相同的 tool_use_id。
-                history = [
-                    *history,
+                full_history = [
+                    *full_history,
                     APIMessage("assistant", tuple(response_blocks)),
                     APIMessage("user", tuple(result_blocks)),
                 ]

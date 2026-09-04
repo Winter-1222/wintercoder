@@ -1,13 +1,21 @@
-"""第七章的上下文入口：保存过大的工具结果，并只让模型看到短预览。"""
+"""第七章上下文入口：保存大结果，并为每轮模型请求生成精简视图。"""
 
 from __future__ import annotations
 
 import asyncio
 import re
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, field
 from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from jixue.domain.conversation import (
+    APIMessage,
+    APITextBlock,
+    APIToolResultBlock,
+    APIToolUseBlock,
+)
 
 if TYPE_CHECKING:
     from jixue.tools.base import ToolResult
@@ -19,8 +27,65 @@ RESULT_PREVIEW_CHARACTERS = 8_000
 DEFAULT_ARTIFACT_READ_CHARACTERS = 8_000
 MAX_ARTIFACT_READ_CHARACTERS = 20_000
 MAX_ARTIFACT_SEARCH_MATCHES = 100
+# 工具结果总量超过触发线时，一次清到目标线附近，避免每轮只删一点、反复破坏缓存前缀。
+ACTIVE_RESULT_TRIGGER_CHARACTERS = 200_000
+ACTIVE_RESULT_TARGET_CHARACTERS = 120_000
+KEEP_RECENT_TOOL_ROUNDS = 3
 ARTIFACT_DIRECTORY = Path(".jixue") / "tool-results"
 _SAFE_ARTIFACT_ID = re.compile(r"[A-Za-z0-9_-]+")
+_ARTIFACT_ID_IN_RESULT = re.compile(r"artifact_id[：:]\s*([A-Za-z0-9_-]+)")
+
+
+@dataclass(slots=True)
+class ActiveContext:
+    """保留完整历史，只为下一次模型请求生成较小的临时视图。"""
+
+    trigger_characters: int = ACTIVE_RESULT_TRIGGER_CHARACTERS
+    target_characters: int = ACTIVE_RESULT_TARGET_CHARACTERS
+    keep_recent_tool_rounds: int = KEEP_RECENT_TOOL_ROUNDS
+    _cleared_tool_use_ids: set[str] = field(default_factory=set, init=False)
+
+    def __post_init__(self) -> None:
+        if self.keep_recent_tool_rounds < 1:
+            raise ValueError("至少保留 1 个最近工具轮")
+        if not 0 <= self.target_characters < self.trigger_characters:
+            raise ValueError("活动上下文目标线必须大于等于 0 且小于触发线")
+
+    def build(self, full_history: Sequence[APIMessage]) -> list[APIMessage]:
+        """达到触发线后，成轮清理最旧结果；原消息和块永远不被修改。"""
+
+        # 标准工具 ID 应全程唯一。发现复用时整份原样返回，避免清掉尚未看过的新结果。
+        if _has_duplicate_tool_ids(full_history):
+            return list(full_history)
+        rounds = _completed_tool_rounds(full_history)
+        active_characters = _active_result_characters(
+            rounds,
+            self._cleared_tool_use_ids,
+        )
+        if active_characters > self.trigger_characters:
+            # 最近几轮很可能仍与当前决策直接相关，尤其最新结果还没被模型看过。
+            older_rounds = rounds[: max(0, len(rounds) - self.keep_recent_tool_rounds)]
+            for blocks in older_rounds:
+                uncleared = [
+                    block
+                    for block in blocks
+                    if block.tool_use_id not in self._cleared_tool_use_ids
+                ]
+                reduction = sum(
+                    len(block.content) - len(_cleared_result_content(block))
+                    for block in uncleared
+                )
+                if reduction <= 0:
+                    continue
+                # 同一轮的并行结果一起进入清理集合，消息结构和 ID 顺序完全保留。
+                self._cleared_tool_use_ids.update(
+                    block.tool_use_id for block in uncleared
+                )
+                active_characters -= reduction
+                if active_characters <= self.target_characters:
+                    break
+
+        return _replace_cleared_results(full_history, self._cleared_tool_use_ids)
 
 
 @dataclass(slots=True)
@@ -133,3 +198,106 @@ def _head_and_tail(content: str) -> tuple[str, str]:
 
     half = RESULT_PREVIEW_CHARACTERS // 2
     return content[:half], content[-half:]
+
+
+def _completed_tool_rounds(
+    history: Sequence[APIMessage],
+) -> list[tuple[APIToolResultBlock, ...]]:
+    """只接受 ID 完整配对的相邻 tool_use/tool_result，异常结构宁可不清理。"""
+
+    rounds: list[tuple[APIToolResultBlock, ...]] = []
+    for index in range(1, len(history)):
+        assistant = history[index - 1]
+        result = history[index]
+        if assistant.role != "assistant" or result.role != "user":
+            continue
+        if not isinstance(assistant.content, tuple) or not isinstance(result.content, tuple):
+            continue
+        if any(
+            not isinstance(block, (APITextBlock, APIToolUseBlock))
+            for block in assistant.content
+        ):
+            continue
+        uses = tuple(
+            block for block in assistant.content if isinstance(block, APIToolUseBlock)
+        )
+        results = tuple(
+            block for block in result.content if isinstance(block, APIToolResultBlock)
+        )
+        if (
+            uses
+            and len(results) == len(result.content)
+            and [block.id for block in uses]
+            == [block.tool_use_id for block in results]
+        ):
+            rounds.append(results)
+    return rounds
+
+
+def _has_duplicate_tool_ids(history: Sequence[APIMessage]) -> bool:
+    """ID 一旦复用，全局字符串替换就不再安全，因此本轮放弃清理。"""
+
+    use_ids: list[str] = []
+    result_ids: list[str] = []
+    for message in history:
+        if not isinstance(message.content, tuple):
+            continue
+        for block in message.content:
+            if isinstance(block, APIToolUseBlock):
+                use_ids.append(block.id)
+            elif isinstance(block, APIToolResultBlock):
+                result_ids.append(block.tool_use_id)
+    return len(use_ids) != len(set(use_ids)) or len(result_ids) != len(set(result_ids))
+
+
+def _active_result_characters(
+    rounds: Sequence[Sequence[APIToolResultBlock]],
+    cleared_ids: set[str],
+) -> int:
+    """统计当前模型视图中的工具结果字符数，不把完整历史误当成活动大小。"""
+
+    return sum(
+        len(_cleared_result_content(block))
+        if block.tool_use_id in cleared_ids
+        else len(block.content)
+        for blocks in rounds
+        for block in blocks
+    )
+
+
+def _replace_cleared_results(
+    history: Sequence[APIMessage],
+    cleared_ids: set[str],
+) -> list[APIMessage]:
+    """复制消息列表，仅替换选中 result 的 content，绝不删除任何块。"""
+
+    active: list[APIMessage] = []
+    for message in history:
+        if not isinstance(message.content, tuple):
+            active.append(message)
+            continue
+        blocks = tuple(
+            APIToolResultBlock(
+                block.tool_use_id,
+                _cleared_result_content(block),
+                block.is_error,
+            )
+            if isinstance(block, APIToolResultBlock)
+            and block.tool_use_id in cleared_ids
+            else block
+            for block in message.content
+        )
+        active.append(APIMessage(message.role, blocks))
+    return active
+
+
+def _cleared_result_content(block: APIToolResultBlock) -> str:
+    """大结果若已有 artifact，保留其编号；否则提示模型按需重新调用工具。"""
+
+    match = _ARTIFACT_ID_IN_RESULT.search(block.content)
+    if match:
+        return (
+            "[较早的工具结果已从活动上下文移除。"
+            f"完整结果仍可用 read_artifact 读取，artifact_id：{match.group(1)}]"
+        )
+    return "[较早的工具结果已从活动上下文移除；如仍需细节，请重新调用对应工具。]"

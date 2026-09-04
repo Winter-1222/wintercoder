@@ -23,8 +23,8 @@ myAgent/
 
 | 文件 | 职责 |
 | --- | --- |
-| `src/jixue/agent.py` | Agent 核心：循环调用 LLM，校验并执行工具；所有结果先交给 `ToolResultStore.prepare` 保护，再按原顺序回传 |
-| `src/jixue/context.py` | 上下文保护：超过 50,000 字符的工具结果落盘，并生成有界预览和安全档案编号 |
+| `src/jixue/agent.py` | Agent 核心：循环调用 LLM，保存本次任务的 `full_history`，每轮只把 `active_history` 发给模型 |
+| `src/jixue/context.py` | 上下文保护：大结果落盘；工具结果总量过线后，成轮替换模型视图中的旧结果 |
 | `src/jixue/prompt.py` | 生成稳定的七段式 System Prompt，以及每轮动态的任务模式、权限模式、时间和 Git 提醒 |
 | `src/jixue/permission.py` | 权限判断核心：危险命令、路径沙箱、精确安全规则、三种权限模式和 ALLOW/DENY/ASK 结果 |
 | `src/jixue/domain/conversation.py` | 普通消息、工具内容块、多轮历史，以及完成/取消消息的 API 前清洗 |
