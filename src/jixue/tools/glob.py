@@ -10,7 +10,14 @@ from pathlib import Path
 from jixue.tools.base import BaseTool, ToolContext, ToolInput, ToolResult
 
 MAX_MATCHES = 200
-SKIPPED_NAMES = {".git", ".env", "node_modules", "out", "__pycache__"}
+SKIPPED_NAMES = {".git", ".env", ".jixue", "node_modules", "out", "__pycache__"}
+
+
+def _is_skipped(name: str) -> bool:
+    """跳过依赖、运行数据和所有 .env 变体，避免返回内部文件路径。"""
+
+    lowered = name.casefold()
+    return lowered in SKIPPED_NAMES or lowered.startswith(".env.")
 
 
 def _matches(path: tuple[str, ...], pattern: tuple[str, ...]) -> bool:
@@ -29,9 +36,9 @@ def _find_matches(root: Path, pattern: tuple[str, ...]) -> list[str]:
     matches: list[str] = []
     for directory, names, files in walk(root):
         # 在遍历阶段剪掉依赖目录，避免先扫描整个 node_modules 再过滤。
-        names[:] = sorted(name for name in names if name not in SKIPPED_NAMES)
+        names[:] = sorted(name for name in names if not _is_skipped(name))
         for name in sorted(files):
-            if name in SKIPPED_NAMES:
+            if _is_skipped(name):
                 continue
             target = Path(directory) / name
             relative = target.relative_to(root)

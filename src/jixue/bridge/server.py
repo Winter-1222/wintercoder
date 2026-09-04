@@ -32,6 +32,7 @@ from jixue.tools import (
     create_edit_file_tool,
     create_glob_tool,
     create_grep_tool,
+    create_read_artifact_tool,
     create_read_file_tool,
     create_write_file_tool,
 )
@@ -116,6 +117,7 @@ def main() -> None:
     project_root = Path.cwd().resolve()
     tools = ToolRegistry()
     tools.register(create_read_file_tool())
+    tools.register(create_read_artifact_tool())
     tools.register(create_glob_tool())
     tools.register(create_grep_tool())
     # 写入和命令工具只有在权限确认链路就绪后才注册，避免模型绕过用户确认。

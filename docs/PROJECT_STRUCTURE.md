@@ -12,6 +12,7 @@ myAgent/
 ├─ scripts/            本地检查脚本
 ├─ src/jixue/          Python 后端核心
 ├─ tests/              本地测试，Git 忽略
+├─ .jixue/             工具大结果等运行数据，Git 忽略
 ├─ .env                本地密钥，Git 忽略
 ├─ .env.example        不含密钥的配置示例
 ├─ pyproject.toml      Python 项目和检查工具配置
@@ -22,7 +23,8 @@ myAgent/
 
 | 文件 | 职责 |
 | --- | --- |
-| `src/jixue/agent.py` | Agent 核心：循环调用 LLM，校验并执行工具；等待模型或工具时都监听取消，再按原顺序回传结果 |
+| `src/jixue/agent.py` | Agent 核心：循环调用 LLM，校验并执行工具；所有结果先交给 `ToolResultStore.prepare` 保护，再按原顺序回传 |
+| `src/jixue/context.py` | 上下文保护：超过 50,000 字符的工具结果落盘，并生成有界预览和安全档案编号 |
 | `src/jixue/prompt.py` | 生成稳定的七段式 System Prompt，以及每轮动态的任务模式、权限模式、时间和 Git 提醒 |
 | `src/jixue/permission.py` | 权限判断核心：危险命令、路径沙箱、精确安全规则、三种权限模式和 ALLOW/DENY/ASK 结果 |
 | `src/jixue/domain/conversation.py` | 普通消息、工具内容块、多轮历史，以及完成/取消消息的 API 前清洗 |
@@ -36,15 +38,16 @@ myAgent/
 | `src/jixue/mcp/__init__.py` | MCP 客户端层公开导入入口 |
 | `src/jixue/bridge/bootstrap.py` | 读取项目根目录 `.env`，选择 Fake 或真实 LLM |
 | `src/jixue/bridge/application.py` | 转发任务模式、权限模式、聊天、取消和权限回复，并为 Agent 事件包装信封 |
-| `src/jixue/bridge/server.py` | 从 stdin 收 JSON、从 stdout 发 JSON；后台并行连接 stdio/HTTP，失败时用新客户端重试并报告状态 |
+| `src/jixue/bridge/server.py` | 从 stdin 收 JSON、从 stdout 发 JSON；注册内置工具（含 `read_artifact`），并在后台连接和重试 MCP Server |
 | `src/jixue/bridge/__main__.py` | 让 `python -m jixue.bridge` 能启动 |
 | `src/jixue/tools/base.py` | 工具合同、ToolResult 和通用 BaseTool |
 | `src/jixue/tools/registry.py` | 注册、启用、禁用、按名称执行工具，并可只导出只读工具定义 |
-| `src/jixue/tools/read_file.py` | 读取项目内 UTF-8 文本文件 |
-| `src/jixue/tools/glob.py` | 按 glob 模式查找项目内文件路径 |
-| `src/jixue/tools/grep.py` | 在项目文本文件中搜索字面内容并返回行号 |
+| `src/jixue/tools/read_file.py` | 读取项目内 UTF-8 文本文件，可指定起止行；拒绝读取密钥和 `.jixue` 运行数据 |
+| `src/jixue/tools/read_artifact.py` | 用安全编号搜索或分段读取已经落盘的工具大结果；为控制内存暂时串行执行 |
+| `src/jixue/tools/glob.py` | 按 glob 模式查找项目内文件路径，跳过密钥和 `.jixue` |
+| `src/jixue/tools/grep.py` | 在项目文本文件中搜索字面内容并返回行号，跳过密钥和 `.jixue` |
 | `src/jixue/tools/write_tools.py` | write_file 整体写入文件；edit_file 只替换唯一匹配的文字 |
-| `src/jixue/tools/bash.py` | 在项目根目录执行 PowerShell/Bash，限制时长、输出并移除常见密钥环境变量 |
+| `src/jixue/tools/bash.py` | 在项目根目录执行 PowerShell/Bash，限制时长并移除常见密钥环境变量；完整输出交给统一的上下文保护 |
 | `src/jixue/tools/__init__.py` | 工具层公开导入入口 |
 
 `agent.py` 是现在最先阅读的核心；`domain` 不知道 Electron 和 Anthropic；`adapters` 藏住外部 SDK；`bridge` 只负责连接桌面端。
@@ -79,6 +82,7 @@ myAgent/
 | `docs/chapters/04-system-prompt/README.md` | 第四章提示词分层、完整请求链路和手测说明 |
 | `docs/chapters/05-permissions/README.md` | 第五章权限防线、判断链路和分步进度 |
 | `docs/chapters/06-mcp/README.md` | 第六章 MCP 连接、工具包装、完整调用链和手测说明 |
+| `docs/chapters/07-context/README.md` | 第七章大结果落盘、按需读取和后续压缩路线 |
 | `scripts/test-all.ps1` | 顺序执行本地自动化检查 |
 
 本地 `tests/mcp/demo_server.py` 和 `demo_http_server.py` 分别模拟 stdio 与 HTTP
@@ -86,3 +90,5 @@ Server；对应测试覆盖两条真实闭环。每章目录只允许有一个 `
 文件由 `.gitignore` 排除，不会提交。`probe_amap.py` 只诊断高德连接和工具发现，
 `probe_amap_agent.py` 用真实模型走一遍“模型 → 高德工具 → 最终回答”；二者都不会
 打印 URL 或 Key。
+
+`.jixue/tool-results/` 由程序运行时自动创建。里面保存工具完整大结果，界面和模型只接收预览；该目录不属于源码，也不会提交到 Git。

@@ -11,7 +11,14 @@ from jixue.tools.base import BaseTool, ToolContext, ToolInput, ToolResult
 
 MAX_RESULTS = 100
 MAX_LINE_LENGTH = 300
-SKIPPED_NAMES = {".git", ".env", "node_modules", "out", "__pycache__"}
+SKIPPED_NAMES = {".git", ".env", ".jixue", "node_modules", "out", "__pycache__"}
+
+
+def _is_skipped(name: str) -> bool:
+    """跳过依赖、运行数据和所有 .env 变体，避免把密钥送入模型。"""
+
+    lowered = name.casefold()
+    return lowered in SKIPPED_NAMES or lowered.startswith(".env.")
 
 
 def _iter_files(target: Path) -> Iterator[Path]:
@@ -22,9 +29,9 @@ def _iter_files(target: Path) -> Iterator[Path]:
         return
     for directory, names, files in walk(target):
         # 排序让相同输入得到稳定结果，模型和测试都更容易复盘。
-        names[:] = sorted(name for name in names if name not in SKIPPED_NAMES)
+        names[:] = sorted(name for name in names if not _is_skipped(name))
         for name in sorted(files):
-            if name not in SKIPPED_NAMES:
+            if not _is_skipped(name):
                 yield Path(directory) / name
 
 
@@ -75,7 +82,7 @@ def create_grep_tool() -> BaseTool:
             relative_target = target.relative_to(root)
         except ValueError:
             return ToolResult("拒绝搜索项目目录之外的文件", is_error=True)
-        if any(part in SKIPPED_NAMES for part in relative_target.parts):
+        if any(_is_skipped(part) for part in relative_target.parts):
             return ToolResult("拒绝搜索依赖、构建产物或敏感配置", is_error=True)
         if not target.exists():
             return ToolResult(f"搜索路径不存在：{path}", is_error=True)

@@ -12,6 +12,7 @@ from time import perf_counter
 from typing import Any
 from uuid import uuid4
 
+from jixue.context import ToolResultStore
 from jixue.domain.conversation import (
     APIContentBlock,
     APIMessage,
@@ -89,6 +90,8 @@ class Agent:
         self._conversation = conversation or ConversationManager()
         self._tools = tools or ToolRegistry()
         self._tool_context = tool_context or ToolContext(Path.cwd().resolve())
+        # 所有内置工具和 MCP 工具都从这里经过同一套大结果保护。
+        self._tool_result_store = ToolResultStore(self._tool_context.project_root)
         # 固定提示词只生成一次；每轮不变，供应商才有机会复用 Prompt Cache。
         self._system_prompt = build_system_prompt(self._tool_context.project_root)
         self._max_iterations = max_iterations
@@ -603,6 +606,11 @@ class Agent:
             call.tool_name,
             self._tool_context,
             call.tool_input,
+        )
+        result = await self._tool_result_store.prepare(
+            call.tool_use_id,
+            call.tool_name,
+            result,
         )
         duration_ms = round((perf_counter() - started_at) * 1000)
         return result, duration_ms

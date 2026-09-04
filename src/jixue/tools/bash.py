@@ -5,11 +5,11 @@ from __future__ import annotations
 import asyncio
 import os
 import subprocess
+from contextlib import suppress
 
 from jixue.tools.base import BaseTool, ToolContext, ToolInput, ToolResult
 
 COMMAND_TIMEOUT_SECONDS = 30
-MAX_OUTPUT_CHARACTERS = 50_000
 SENSITIVE_ENV_MARKERS = ("API_KEY", "TOKEN", "SECRET", "PASSWORD")
 
 
@@ -58,6 +58,14 @@ def create_bash_tool() -> BaseTool:
                 is_error=True,
                 metadata={"exit_code": None, "timed_out": True},
             )
+        except asyncio.CancelledError:
+            # 只结束 Agent 等待还不够；必须同时结束系统子进程，避免它在后台继续改文件。
+            if process.returncode is None:
+                # 进程可能刚好自行结束；这种竞态不应覆盖原本的取消信号。
+                with suppress(ProcessLookupError):
+                    process.kill()
+                await process.communicate()
+            raise
 
         stdout = stdout_bytes.decode("utf-8", errors="replace").strip()
         stderr = stderr_bytes.decode("utf-8", errors="replace").strip()
@@ -67,7 +75,9 @@ def create_bash_tool() -> BaseTool:
             is_error=process.returncode != 0,
             metadata={
                 "exit_code": process.returncode,
-                "truncated": len(content) > MAX_OUTPUT_CHARACTERS,
+                "characters": len(content),
+                # 真正的截断和落盘由 Agent 的统一 ToolResultStore 处理。
+                "truncated": False,
             },
         )
 
@@ -93,14 +103,11 @@ def create_bash_tool() -> BaseTool:
 
 
 def _format_output(stdout: str, stderr: str) -> str:
-    """合并标准输出和错误输出，并限制回传给模型的字符数。"""
+    """合并标准输出和错误输出；这里必须保留原文，之后才能完整落盘。"""
 
     parts = []
     if stdout:
         parts.append(stdout)
     if stderr:
         parts.append(f"[stderr]\n{stderr}")
-    content = "\n\n".join(parts) or "命令执行完成，没有输出"
-    if len(content) > MAX_OUTPUT_CHARACTERS:
-        return content[:MAX_OUTPUT_CHARACTERS] + "\n……输出过长，已截断"
-    return content
+    return "\n\n".join(parts) or "命令执行完成，没有输出"

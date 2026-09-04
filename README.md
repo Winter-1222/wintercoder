@@ -2,15 +2,18 @@
 
 霁雪是一个从零学习 Agent Harness 的小项目。名字来自“雪后初晴”。
 
-第一章聊天链路和第二章工具闭环已经完成。第三章第 1 步已经把真正的 Agent 核心集中到 `src/jixue/agent.py`；持续循环、取消和并发尚未实现。
+第 0 至第 6 章已经完成。第 7 章正在进行：大工具结果已经可以落盘并按需读取，旧上下文清理和自动压缩尚未实现。
 
 ## 现在能做什么
 
 - Electron 聊天界面，支持多轮对话。
 - 回复过程中显示纯文本，结束后渲染 Markdown。
 - 状态栏显示模型、累计 Token 和本轮耗时。
-- 默认使用免费的 `FakeLLM`，不联网也能走通整条链路。
-- Fake 模式输入 `/read README.md`，可免费观察一次完整工具调用。
+- Agent Loop 支持多轮工具调用、并发只读工具、取消和 Plan/Do 模式。
+- 内置 read、write、edit、grep、glob、bash 工具，并带五层权限保护。
+- 支持 stdio/Streamable HTTP MCP；连接成功后，MCP 工具立即注册并供下一次模型请求使用。
+- 超过 50,000 字符的工具结果会保存到本地，模型通过 `read_artifact` 按需取回片段。
+- 未配置真实模型时使用 `FakeLLM`，方便本地自动化测试。
 - 在项目根目录 `.env` 中配置后，可调用 Anthropic 协议兼容的 DeepSeek 模型。
 - Python 领域代码不依赖 Anthropic SDK，后续更换供应商只改适配器。
 
@@ -60,5 +63,9 @@ npm run test:electron
 - [第 1 章：让 AI 开口说话](docs/chapters/01-llm-ui/README.md)
 - [第 2 章：工具系统](docs/chapters/02-tools/README.md)
 - [第 3 章：Agent Loop](docs/chapters/03-agent-loop/README.md)
+- [第 4 章：System Prompt](docs/chapters/04-system-prompt/README.md)
+- [第 5 章：权限](docs/chapters/05-permissions/README.md)
+- [第 6 章：MCP](docs/chapters/06-mcp/README.md)
+- [第 7 章：上下文管理](docs/chapters/07-context/README.md)
 
-每章只保留一个 README；第三章 README 会随着每个小步骤继续更新。
+每章只保留一个 README，并随着该章的小步骤继续更新。
