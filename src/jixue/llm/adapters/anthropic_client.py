@@ -31,6 +31,7 @@ from jixue.llm.base import (
 from jixue.llm.config import LLMConfig
 
 type AnthropicClientFactory = Callable[..., anthropic.AsyncAnthropic]
+LLM_TIMEOUT_SECONDS = 120
 
 
 class AnthropicLLMClient:
@@ -115,6 +116,7 @@ class AnthropicLLMClient:
                 api_key=self._config.api_key,
                 base_url=self._config.base_url,
                 max_retries=2,
+                timeout=LLM_TIMEOUT_SECONDS,
             )
         return self._client
 

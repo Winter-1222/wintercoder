@@ -10,15 +10,20 @@ from typing import TextIO
 
 from jixue.agent import Agent
 from jixue.bridge.application import BridgeApplication
-from jixue.bridge.bootstrap import BridgeBootstrapError, create_runtime_llm
+from jixue.bridge.bootstrap import (
+    BridgeBootstrapError,
+    create_runtime_llm,
+    load_project_environment,
+)
 from jixue.domain.events import Envelope, ProtocolError
 from jixue.llm.base import LLMClient
 from jixue.mcp import (
     MCPError,
+    MCPServerConfig,
     MCPToolWrapper,
-    StdioMCPClient,
-    StdioServerConfig,
-    load_stdio_server_configs,
+    MCPTransport,
+    create_mcp_client,
+    load_server_configs,
 )
 from jixue.tools import (
     ToolRegistry,
@@ -128,7 +133,7 @@ async def _run_bridge(
 ) -> None:
     """立即启动 Agent，同时在后台连接 MCP Server。"""
 
-    clients: list[StdioMCPClient] = []
+    clients: list[MCPTransport] = []
     agent = Agent(llm, tools=tools)
     server = BridgeServer(
         BridgeApplication(agent),
@@ -145,20 +150,29 @@ async def _run_bridge(
         connect_task.cancel()
         await asyncio.gather(connect_task, return_exceptions=True)
         for client in reversed(clients):
-            await client.close()
+            try:
+                await client.close()
+            except Exception as error:
+                # 关闭失败不应让 Electron 退出时出现主进程错误弹窗。
+                sys.stderr.write(
+                    f"MCP Server {client.server_name} 关闭失败：{type(error).__name__}\n"
+                )
+                sys.stderr.flush()
 
 
 async def _connect_mcp_servers(
     tools: ToolRegistry,
     project_root: Path,
-    clients: list[StdioMCPClient],
+    clients: list[MCPTransport],
     emit: EventEmitter,
 ) -> None:
     """并行后台连接；一个 Server 失败不会影响 Bridge 和其他 Server。"""
 
     try:
-        configs = load_stdio_server_configs(project_root)
-    except MCPError as error:
+        # MCP 与 LLM 共用项目根目录 .env，但 MCP 只拿它替换配置中的占位符。
+        environment = load_project_environment(project_root)
+        configs = load_server_configs(project_root, environ=environment)
+    except (BridgeBootstrapError, MCPError) as error:
         await emit(_mcp_status("config", "failed", str(error)))
         return
 
@@ -169,16 +183,16 @@ async def _connect_mcp_servers(
 
 
 async def _connect_one_mcp_server(
-    config: StdioServerConfig,
+    config: MCPServerConfig,
     tools: ToolRegistry,
     project_root: Path,
-    clients: list[StdioMCPClient],
+    clients: list[MCPTransport],
     emit: EventEmitter,
 ) -> None:
     """连接一个 Server，并把成功或失败都转换成状态事件。"""
 
     await emit(_mcp_status(config.name, "connecting", "正在连接"))
-    client = StdioMCPClient(config, project_root)
+    client = create_mcp_client(config, project_root)
     try:
         definitions = await client.connect()
         wrappers = [MCPToolWrapper(client, definition) for definition in definitions]

@@ -3,21 +3,29 @@
 from jixue.mcp.client import (
     MCPCallResult,
     MCPError,
+    MCPServerConfig,
     MCPToolDefinition,
     MCPTransport,
     StdioMCPClient,
     StdioServerConfig,
-    load_stdio_server_configs,
+    StreamableHTTPMCPClient,
+    StreamableHTTPServerConfig,
+    create_mcp_client,
+    load_server_configs,
 )
 from jixue.mcp.tool import MCPToolWrapper
 
 __all__ = [
     "MCPCallResult",
     "MCPError",
+    "MCPServerConfig",
     "MCPToolDefinition",
     "MCPToolWrapper",
     "MCPTransport",
     "StdioMCPClient",
     "StdioServerConfig",
-    "load_stdio_server_configs",
+    "StreamableHTTPMCPClient",
+    "StreamableHTTPServerConfig",
+    "create_mcp_client",
+    "load_server_configs",
 ]

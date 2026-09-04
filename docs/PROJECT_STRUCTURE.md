@@ -22,7 +22,7 @@ myAgent/
 
 | 文件 | 职责 |
 | --- | --- |
-| `src/jixue/agent.py` | Agent 核心：循环调用 LLM，在工具执行前完成校验、权限模式判断和确认等待，再按原顺序回传结果 |
+| `src/jixue/agent.py` | Agent 核心：循环调用 LLM，校验并执行工具；等待模型或工具时都监听取消，再按原顺序回传结果 |
 | `src/jixue/prompt.py` | 生成稳定的七段式 System Prompt，以及每轮动态的任务模式、权限模式、时间和 Git 提醒 |
 | `src/jixue/permission.py` | 权限判断核心：危险命令、路径沙箱、精确安全规则、三种权限模式和 ALLOW/DENY/ASK 结果 |
 | `src/jixue/domain/conversation.py` | 普通消息、工具内容块、多轮历史，以及完成/取消消息的 API 前清洗 |
@@ -31,12 +31,12 @@ myAgent/
 | `src/jixue/llm/fake.py` | 离线模拟 LLM；/read、/loop 测读取，/write 只用于权限端到端测试 |
 | `src/jixue/llm/config.py` | 从 `models.yaml` 和环境中生成四字段配置 |
 | `src/jixue/llm/adapters/anthropic_client.py` | 唯一接触 Anthropic SDK，把 system、messages、tools 发给协议端点并翻译流事件 |
-| `src/jixue/mcp/client.py` | MCP transport 合同、stdio 连接、握手、工具发现、调用和配置读取；MCP SDK 只在这里出现 |
+| `src/jixue/mcp/client.py` | MCP transport 合同、stdio/HTTP 连接、`.env` URL 占位替换、握手、工具发现、限时调用；MCP SDK 只在这里出现 |
 | `src/jixue/mcp/tool.py` | 把 MCP 工具定义和调用结果包装成霁雪统一的 Tool/ToolResult |
 | `src/jixue/mcp/__init__.py` | MCP 客户端层公开导入入口 |
 | `src/jixue/bridge/bootstrap.py` | 读取项目根目录 `.env`，选择 Fake 或真实 LLM |
 | `src/jixue/bridge/application.py` | 转发任务模式、权限模式、聊天、取消和权限回复，并为 Agent 事件包装信封 |
-| `src/jixue/bridge/server.py` | 从 stdin 收 JSON、从 stdout 发 JSON，并让多个 MCP Server 在后台并行连接、独立报告状态 |
+| `src/jixue/bridge/server.py` | 从 stdin 收 JSON、从 stdout 发 JSON，并按配置创建 stdio/HTTP 客户端，在后台并行连接和报告状态 |
 | `src/jixue/bridge/__main__.py` | 让 `python -m jixue.bridge` 能启动 |
 | `src/jixue/tools/base.py` | 工具合同、ToolResult 和通用 BaseTool |
 | `src/jixue/tools/registry.py` | 注册、启用、禁用、按名称执行工具，并可只导出只读工具定义 |
@@ -81,6 +81,8 @@ myAgent/
 | `docs/chapters/06-mcp/README.md` | 第六章 MCP 连接、工具包装、完整调用链和手测说明 |
 | `scripts/test-all.ps1` | 顺序执行本地自动化检查 |
 
-本地 `tests/mcp/demo_server.py` 是 echo MCP Server，`test_stdio_mcp.py` 覆盖真实
-stdio 闭环。每章目录只允许有一个 `README.md`；这些测试文件由 `.gitignore`
-排除，不会提交。
+本地 `tests/mcp/demo_server.py` 和 `demo_http_server.py` 分别模拟 stdio 与 HTTP
+Server；对应测试覆盖两条真实闭环。每章目录只允许有一个 `README.md`；这些测试
+文件由 `.gitignore` 排除，不会提交。`probe_amap.py` 只诊断高德连接和工具发现，
+`probe_amap_agent.py` 用真实模型走一遍“模型 → 高德工具 → 最终回答”；二者都不会
+打印 URL 或 Key。

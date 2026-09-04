@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Mapping, Sequence
+from contextlib import suppress
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from time import perf_counter
+from typing import Any
 from uuid import uuid4
 
 from jixue.domain.conversation import (
@@ -172,8 +174,9 @@ class Agent:
                 return_when=asyncio.FIRST_COMPLETED,
             )
             if cancel_wait in done:
-                next_event.cancel()
-                await asyncio.gather(next_event, return_exceptions=True)
+                # 大多数网络库会立刻响应 cancel，但少数底层连接可能要等超时才退出。
+                # 这里不能继续 await 它，否则页面会显示“正在停止”却迟迟无法解锁。
+                _cancel_in_background(next_event)
                 return
 
             cancel_wait.cancel()
@@ -383,9 +386,15 @@ class Agent:
 
                     if cancelled:
                         break
-                    completed = await asyncio.gather(
-                        *(self._execute_tool_call(call) for _, call in ready_calls)
+                    completed = await self._execute_tool_batch(
+                        [call for _, call in ready_calls]
                     )
+                    if completed is None:
+                        cancelled = True
+                        stop_reason = "cancelled"
+                        for pending in pending_tool_calls:
+                            yield _cancelled_tool_event(pending)
+                        break
                     for (index, _), execution in zip(
                         ready_calls,
                         completed,
@@ -598,6 +607,33 @@ class Agent:
         duration_ms = round((perf_counter() - started_at) * 1000)
         return result, duration_ms
 
+    async def _execute_tool_batch(
+        self,
+        calls: Sequence[LLMStreamEvent],
+    ) -> list[tuple[ToolResult, int]] | None:
+        """等待一批工具；用户取消时立即放弃等待并让 Agent 收尾。"""
+
+        if not calls:
+            return []
+
+        async def execute_all() -> list[tuple[ToolResult, int]]:
+            return list(await asyncio.gather(*(self._execute_tool_call(call) for call in calls)))
+
+        execution = asyncio.create_task(execute_all())
+        cancel_wait = asyncio.create_task(self._cancel_event.wait())
+        done, _ = await asyncio.wait(
+            (execution, cancel_wait),
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if cancel_wait in done:
+            # 工具可能正在等待远程 HTTP；不再让这次等待占住后续聊天。
+            _cancel_in_background(execution)
+            return None
+
+        cancel_wait.cancel()
+        await asyncio.gather(cancel_wait, return_exceptions=True)
+        return execution.result()
+
     def _remember_failed(self, chunks: list[str]) -> None:
         """保留已经显示的半截回复，但标记失败，下一轮不会发给 LLM。"""
 
@@ -650,6 +686,19 @@ def _partition_tool_calls(
     return batches
 
 
+def _cancel_in_background(task: asyncio.Task[Any]) -> None:
+    """请求取消但不阻塞 Agent；任务稍后结束时取走异常，避免控制台警告。"""
+
+    task.cancel()
+
+    def consume_result(done: asyncio.Task[Any]) -> None:
+        # 这里处理的是已被我们主动取消的后台任务，异常不能再影响新一轮聊天。
+        with suppress(BaseException):
+            done.result()
+
+    task.add_done_callback(consume_result)
+
+
 def _cancelled_tool_event(call: LLMStreamEvent) -> AgentEvent:
     """关闭尚未执行的工具卡片，避免取消后一直显示“执行中”。"""
 
@@ -657,7 +706,7 @@ def _cancelled_tool_event(call: LLMStreamEvent) -> AgentEvent:
         AgentEventType.TOOL_RESULT,
         id=call.tool_use_id,
         name=call.tool_name,
-        content="用户已停止任务，工具未执行",
+        content="用户已停止任务，工具已中断或不再等待结果",
         is_error=True,
         duration_ms=0,
         metadata={},
