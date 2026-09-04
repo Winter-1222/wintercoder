@@ -51,7 +51,11 @@ function send(channel: string, value: unknown): void {
 function registerIpc(): void {
   ipcMain.handle('jixue:get-bridge-state', (event) => {
     if (!validSender(event)) throw new Error('拒绝未知窗口')
-    return bridge?.getState() ?? { status: 'offline', detail: 'Bridge 未创建' }
+    return bridge?.getState() ?? {
+      status: 'offline',
+      detail: 'Bridge 未创建',
+      mcpServers: []
+    }
   })
   ipcMain.handle('jixue:send-chat', (event, requestId: unknown, text: unknown) => {
     if (!validSender(event)) throw new Error('拒绝未知窗口')

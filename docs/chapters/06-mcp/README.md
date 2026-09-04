@@ -1,6 +1,6 @@
 # 第 6 章：MCP 协议
 
-本章正在开发。第一步已经完成：霁雪能启动一个本地 stdio MCP Server，发现它的工具，并让现有 Agent Loop 像调用内置工具一样调用它。
+本章正在开发。前两步已经完成：霁雪能在后台连接多个 stdio MCP Server，显示每个连接状态，并让现有 Agent Loop 像调用内置工具一样调用它们。
 
 ## 当前成果
 
@@ -9,18 +9,23 @@
 - 完成 `initialize`、`notifications/initialized`、`tools/list` 和 `tools/call`。
 - MCP SDK 类型只留在 `src/jixue/mcp/client.py`，Agent 不依赖 SDK。
 - MCP 工具包装后进入原来的 `ToolRegistry`，原有权限、工具卡片和 Agent Loop 全部复用。
+- Bridge 不等待 MCP 就能先进入可聊天状态，多个 Server 各自并行连接。
+- 单个 Server 失败只显示红色状态，不会阻止 Bridge、其他 Server 或内置工具。
+- Electron Main 缓存每个 Server 的状态，页面晚一点订阅也不会丢失结果。
 - 退出 Bridge 时关闭 MCP session 和它启动的子进程。
 
-这一步只支持 stdio。后台连接状态、延迟加载、ToolSearch 和 Streamable HTTP 留到后续小步。
+目前只支持 stdio。延迟加载、ToolSearch 和 Streamable HTTP 留到后续小步。
 
 ## 推荐阅读顺序
 
 1. `config/mcp.json`：先看 Server 配置从哪里来。
 2. `src/jixue/mcp/client.py`：看 `MCPTransport` 和 `StdioMCPClient`。
 3. `src/jixue/mcp/tool.py`：看外部工具怎样变成霁雪自己的 `Tool`。
-4. `src/jixue/bridge/server.py`：搜索 `_run_bridge()`，看连接和注册发生在哪里。
-5. `src/jixue/tools/registry.py`：复习工具如何导出给模型、如何按名称执行。
-6. `src/jixue/agent.py`：最后看现有循环怎样直接使用注册后的 MCP 工具。
+4. `src/jixue/bridge/server.py`：看后台并行连接、状态事件和注册发生在哪里。
+5. `apps/desktop/src/shared/protocol.ts` 与 `main/bridge-process.ts`：看 Main 如何缓存状态。
+6. `apps/desktop/src/renderer/src/state.ts` 与 `App.tsx`：看状态怎样显示到侧边栏。
+7. `src/jixue/tools/registry.py`：复习工具如何导出给模型、如何按名称执行。
+8. `src/jixue/agent.py`：最后看现有循环怎样直接使用注册后的 MCP 工具。
 
 ## 先分清四个角色
 
@@ -45,18 +50,34 @@ MCPToolWrapper
 ~~~text
 Electron 启动 Python Bridge
   → main() 创建内置 ToolRegistry
-  → load_stdio_server_configs() 读取 mcp.json
+  → 立即创建 Agent 和 BridgeServer
+  → Bridge 可以先回复 bridge.ready，输入框不必等待 MCP
+  → 后台任务读取 mcp.json
   → mcp.local.json 覆盖同名本地配置
+  → 每个 Server 建立独立异步连接任务
+  → 发送 mcp.status(connecting)
   → StdioMCPClient.connect() 启动 MCP 子进程
   → 官方 SDK 发送 initialize
   → SDK 自动发送 notifications/initialized
   → list_tools() 获取 Server 的工具定义
   → MCPToolWrapper 把 echo 包装成 mcp__demo__echo
   → ToolRegistry.register() 注册包装后的工具
-  → 创建 Agent 并开始读取桌面消息
+  → 发送 mcp.status(connected)
+  → Electron Main 缓存状态
+  → Renderer 的 BridgeState 更新侧边栏
 ~~~
 
 工具名增加 `mcp__Server名__工具名` 前缀，是为了避免两个 Server 都有 `search` 时发生重名。
+
+如果一个 Server 连接失败，最后一段会变成：
+
+~~~text
+connect() 失败
+  → 转成 mcp.status(failed)
+  → 侧边栏显示红点和“连接失败”
+  → 后台继续等待其他 Server
+  → Bridge 仍是 ready，内置工具仍可使用
+~~~
 
 ## 一条消息怎样调用 MCP
 
@@ -126,7 +147,7 @@ conda activate mycoder
 pytest -q tests/mcp/test_stdio_mcp.py
 ~~~
 
-看到 `1 passed`，表示下面这条真实链路成功：
+看到 `2 passed`，表示正常调用和“失败不阻塞”都成功：
 
 ~~~text
 启动子进程 → 握手 → tools/list → 注册 → tools/call → 关闭子进程
@@ -149,6 +170,19 @@ npm run dev
 
 关闭窗口后不应出现 JavaScript 错误弹窗，也不应残留 demo Server 进程。
 
+### 3. 手动测试失败隔离
+
+在 Git 忽略的 `config/mcp.local.json` 中临时增加：
+
+~~~json
+"broken": {
+  "transport": "stdio",
+  "command": "jixue-command-that-does-not-exist"
+}
+~~~
+
+重新运行 `npm run dev`。预期 Python Bridge 仍为绿色，demo 显示“已连接”，broken 显示红色“连接失败”，聊天和内置工具仍可使用。测完删除这段临时配置。
+
 ## 权限与并发怎样判断
 
 - `readOnlyHint=true`：包装为只读工具，Plan 模式可见。
@@ -166,11 +200,15 @@ npm run dev
 - 使用相对工作目录启动：本项目固定把 MCP 子进程 cwd 设为项目根目录。
 - 把未知 MCP 工具默认当安全：Server 没有 annotations 时应保守判断。
 - 忘记关闭 client：桌面退出后会残留子进程。
+- 在连接 MCP 之前才启动 Bridge：一个慢 Server 会让整个界面一直停在“正在连接”。
+- 只把状态直接推给 Renderer：页面尚未订阅时可能丢事件，所以 Main 还要缓存状态。
+- 串行连接多个 Server：第一个超时会挡住后面的正常 Server，本项目为每个 Server 建立独立任务。
 - 期待 Fake 自动选择 MCP 工具：Fake 只用于自动测试；桌面全链路请用真实模型。
 
 ## 变更记录
 
 - 第 1 步：完成 stdio transport、握手、工具发现、包装注册、调用、结果转换和退出清理。
+- 第 2 步：完成并行后台连接、失败隔离、`mcp.status` 事件、Main 状态缓存和侧边栏展示。
 
 ## 自测题与答案
 
@@ -188,7 +226,7 @@ npm run dev
 
 **问：这一小步修改了 Agent Loop 吗？**
 
-答：没有。只在创建 Agent 之前向 Registry 注册新工具，证明现有循环不关心工具来源。
+答：没有。后台任务直接向 Agent 持有的同一个 Registry 注册工具；Agent 下一次开始任务时会读取最新工具列表。
 
 **问：只读 MCP 工具一定能并发吗？**
 
@@ -196,4 +234,4 @@ npm run dev
 
 **问：第六章结束了吗？**
 
-答：没有。下一步是后台连接与状态：某个 MCP Server 失败时不阻止霁雪启动，并把连接状态显示给 UI。
+答：没有。下一步是 MCP 工具延迟加载和 `ToolSearch`，避免大量 MCP schema 全部进入模型上下文。

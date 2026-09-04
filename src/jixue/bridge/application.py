@@ -50,6 +50,7 @@ class BridgeApplication:
                         "permission",
                         "permission_mode",
                         "mode",
+                        "mcp_status",
                     ],
                 },
             )

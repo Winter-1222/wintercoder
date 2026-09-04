@@ -97,7 +97,11 @@ export type ChatAction =
   | { type: 'request_failed'; requestId: string; message: string }
 
 export const initialChatState: ChatState = {
-  bridge: { status: 'starting', detail: '正在连接 Python Bridge' },
+  bridge: {
+    status: 'starting',
+    detail: '正在连接 Python Bridge',
+    mcpServers: []
+  },
   messages: [],
   activeRequestId: null,
   isCancelling: false,

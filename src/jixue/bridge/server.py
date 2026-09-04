@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TextIO
 
@@ -16,6 +17,7 @@ from jixue.mcp import (
     MCPError,
     MCPToolWrapper,
     StdioMCPClient,
+    StdioServerConfig,
     load_stdio_server_configs,
 )
 from jixue.tools import (
@@ -29,6 +31,7 @@ from jixue.tools import (
 )
 
 MAX_LINE_BYTES = 1024 * 1024
+type EventEmitter = Callable[[Envelope], Awaitable[None]]
 
 
 class BridgeServer:
@@ -91,6 +94,11 @@ class BridgeServer:
             )
         )
 
+    async def emit(self, event: Envelope) -> None:
+        """允许后台任务复用同一把写锁，避免两条 JSON 输出互相穿插。"""
+
+        await self._write(event)
+
 
 def main() -> None:
     for stream in (sys.stdin, sys.stdout, sys.stderr):
@@ -118,33 +126,96 @@ async def _run_bridge(
     tools: ToolRegistry,
     project_root: Path,
 ) -> None:
-    """先注册 MCP 工具，再启动 Agent；退出时统一关闭 MCP 子进程。"""
+    """立即启动 Agent，同时在后台连接 MCP Server。"""
 
     clients: list[StdioMCPClient] = []
+    agent = Agent(llm, tools=tools)
+    server = BridgeServer(
+        BridgeApplication(agent),
+        sys.stdin,
+        sys.stdout,
+        sys.stderr,
+    )
+    connect_task = asyncio.create_task(
+        _connect_mcp_servers(tools, project_root, clients, server.emit)
+    )
     try:
-        for config in load_stdio_server_configs(project_root):
-            client = StdioMCPClient(config, project_root)
-            definitions = await client.connect()
-            clients.append(client)
-            for definition in definitions:
-                tools.register(MCPToolWrapper(client, definition))
-            sys.stderr.write(
-                f"MCP Server 已连接：{config.name}（发现 {len(definitions)} 个工具）\n"
-            )
-            sys.stderr.flush()
-
-        # MCP 包装后的工具已经在 Registry 中，Agent Loop 不需要知道它们的来源。
-        agent = Agent(llm, tools=tools)
-        server = BridgeServer(
-            BridgeApplication(agent),
-            sys.stdin,
-            sys.stdout,
-            sys.stderr,
-        )
         await server.run()
     finally:
+        connect_task.cancel()
+        await asyncio.gather(connect_task, return_exceptions=True)
         for client in reversed(clients):
             await client.close()
+
+
+async def _connect_mcp_servers(
+    tools: ToolRegistry,
+    project_root: Path,
+    clients: list[StdioMCPClient],
+    emit: EventEmitter,
+) -> None:
+    """并行后台连接；一个 Server 失败不会影响 Bridge 和其他 Server。"""
+
+    try:
+        configs = load_stdio_server_configs(project_root)
+    except MCPError as error:
+        await emit(_mcp_status("config", "failed", str(error)))
+        return
+
+    # 每个 Server 都有自己的任务；一个连接慢，不会挡住其他 Server。
+    await asyncio.gather(
+        *(_connect_one_mcp_server(config, tools, project_root, clients, emit) for config in configs)
+    )
+
+
+async def _connect_one_mcp_server(
+    config: StdioServerConfig,
+    tools: ToolRegistry,
+    project_root: Path,
+    clients: list[StdioMCPClient],
+    emit: EventEmitter,
+) -> None:
+    """连接一个 Server，并把成功或失败都转换成状态事件。"""
+
+    await emit(_mcp_status(config.name, "connecting", "正在连接"))
+    client = StdioMCPClient(config, project_root)
+    try:
+        definitions = await client.connect()
+        wrappers = [MCPToolWrapper(client, definition) for definition in definitions]
+        names = [tool.name() for tool in wrappers]
+        if len(names) != len(set(names)) or any(tools.get(name) for name in names):
+            raise MCPError(f"MCP Server {config.name} 产生了重复工具名")
+        for tool in wrappers:
+            tools.register(tool)
+        clients.append(client)
+    except (MCPError, ValueError) as error:
+        await client.close()
+        detail = str(error)[:500]
+        sys.stderr.write(f"MCP Server 连接失败：{config.name}：{detail}\n")
+        sys.stderr.flush()
+        await emit(_mcp_status(config.name, "failed", detail))
+        return
+
+    detail = f"已连接，发现 {len(definitions)} 个工具"
+    sys.stderr.write(f"MCP Server {config.name}：{detail}\n")
+    sys.stderr.flush()
+    await emit(_mcp_status(config.name, "connected", detail, len(definitions)))
+
+
+def _mcp_status(
+    name: str,
+    status: str,
+    detail: str,
+    tool_count: int = 0,
+) -> Envelope:
+    """所有 MCP 状态使用相同事件形状，Electron 只需解析一次。"""
+
+    return Envelope.create(
+        "mcp.status",
+        f"mcp_{name}",
+        0,
+        {"name": name, "status": status, "detail": detail, "tool_count": tool_count},
+    )
 
 
 if __name__ == "__main__":

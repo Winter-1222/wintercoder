@@ -3,12 +3,21 @@
 export const PROTOCOL_VERSION = 1
 
 export type BridgeStatus = 'starting' | 'ready' | 'offline' | 'error'
+export type McpServerStatus = 'connecting' | 'connected' | 'failed'
 export type AgentMode = 'plan' | 'do'
 export type PermissionMode = 'confirm_edits' | 'ask_all' | 'auto_allow'
+
+export interface McpServerState {
+  name: string
+  status: McpServerStatus
+  detail: string
+  toolCount: number
+}
 
 export interface BridgeState {
   status: BridgeStatus
   detail: string
+  mcpServers: McpServerState[]
 }
 
 export interface BridgeEnvelope {

@@ -10,6 +10,7 @@ import {
   type AgentMode,
   type BridgeEnvelope,
   type BridgeState,
+  type McpServerState,
   type PermissionMode
 } from '../shared/protocol'
 
@@ -20,7 +21,11 @@ type StateListener = (state: BridgeState) => void
 export class PythonBridge {
   private child: ChildProcessWithoutNullStreams | null = null
   private buffer = ''
-  private state: BridgeState = { status: 'offline', detail: '后端尚未启动' }
+  private state: BridgeState = {
+    status: 'offline',
+    detail: '后端尚未启动',
+    mcpServers: []
+  }
   private readonly eventListeners = new Set<EventListener>()
   private readonly stateListeners = new Set<StateListener>()
   private stopping = false
@@ -28,7 +33,11 @@ export class PythonBridge {
   constructor(private readonly projectRoot: string) {}
 
   getState(): BridgeState {
-    return { ...this.state }
+    // 数组和数组元素也复制，Renderer 无法意外改动 Main 中缓存的状态。
+    return {
+      ...this.state,
+      mcpServers: this.state.mcpServers.map((server) => ({ ...server }))
+    }
   }
 
   onEvent(listener: EventListener): () => void {
@@ -44,6 +53,7 @@ export class PythonBridge {
   start(): void {
     if (this.child) return
     this.stopping = false
+    this.state = { ...this.state, mcpServers: [] }
     this.setState('starting', '正在启动 Python Bridge')
 
     const sourceRoot = resolve(this.projectRoot, 'src')
@@ -159,7 +169,9 @@ export class PythonBridge {
       if (event.type === 'bridge.ready') {
         const model = event.payload.model
         if (typeof model !== 'string') throw new Error('ready 缺少模型名')
-        this.setState('ready', `${model} / Bridge 在线`)
+        this.setState('ready', model + ' / Bridge 在线')
+      } else if (event.type === 'mcp.status') {
+        this.updateMcpServer(event.payload)
       }
       this.eventListeners.forEach((listener) => listener(event))
     } catch (error) {
@@ -168,7 +180,35 @@ export class PythonBridge {
   }
 
   private setState(status: BridgeState['status'], detail: string): void {
-    this.state = { status, detail }
+    this.state = { ...this.state, status, detail }
+    this.notifyState()
+  }
+
+  private updateMcpServer(payload: Record<string, unknown>): void {
+    const name = payload.name
+    const status = payload.status
+    const detail = payload.detail
+    const rawToolCount = payload.tool_count
+    if (
+      typeof name !== 'string' ||
+      (status !== 'connecting' && status !== 'connected' && status !== 'failed') ||
+      typeof detail !== 'string'
+    ) {
+      throw new Error('mcp.status 字段无效')
+    }
+    const toolCount =
+      typeof rawToolCount === 'number' && Number.isFinite(rawToolCount) ? rawToolCount : 0
+    const next: McpServerState = { name, status, detail, toolCount }
+    // 同名 Server 的新状态覆盖旧状态；排序让 UI 每次都稳定。
+    const others = this.state.mcpServers.filter((server) => server.name !== name)
+    this.state = {
+      ...this.state,
+      mcpServers: [...others, next].sort((left, right) => left.name.localeCompare(right.name))
+    }
+    this.notifyState()
+  }
+
+  private notifyState(): void {
     this.stateListeners.forEach((listener) => listener(this.getState()))
   }
 }

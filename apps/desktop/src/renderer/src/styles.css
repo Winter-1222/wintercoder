@@ -89,6 +89,56 @@ button, textarea { font: inherit; }
 .bridge-state[data-status="ready"] .status-dot { background: #3f8a64; }
 .bridge-state[data-status="error"] .status-dot { background: #bd4f4a; }
 
+.mcp-panel {
+  padding: 8px 10px 4px;
+  border-top: 1px solid #deded9;
+}
+
+.mcp-panel > header,
+.mcp-server {
+  display: flex;
+  align-items: center;
+}
+
+.mcp-panel > header {
+  justify-content: space-between;
+  margin-bottom: 7px;
+  color: #777770;
+  font-size: 11px;
+}
+
+.mcp-server {
+  gap: 8px;
+  padding: 5px 0;
+}
+
+.mcp-server > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.mcp-server strong,
+.mcp-server small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcp-server strong { color: #4e4e49; font-size: 12px; }
+.mcp-server small { color: #8b8b84; font-size: 10px; }
+
+.mcp-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #c29448;
+}
+
+.mcp-server[data-status="connected"] .mcp-dot { background: #3f8a64; }
+.mcp-server[data-status="failed"] .mcp-dot { background: #bd4f4a; }
+
 .workspace {
   display: grid;
   min-width: 0;

@@ -4,13 +4,24 @@ import { useEffect, useReducer, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
-import type { AgentMode, BridgeEnvelope, PermissionMode } from '../../shared/protocol'
+import type {
+  AgentMode,
+  BridgeEnvelope,
+  McpServerStatus,
+  PermissionMode
+} from '../../shared/protocol'
 import { chatReducer, initialChatState, type UiMessage } from './state'
 
 const PERMISSION_MODE_LABELS: Record<PermissionMode, string> = {
   confirm_edits: '修改需确认',
   ask_all: '每次都询问',
   auto_allow: '自动允许'
+}
+
+const MCP_STATUS_LABELS: Record<McpServerStatus, string> = {
+  connecting: '连接中',
+  connected: '已连接',
+  failed: '连接失败'
 }
 
 function MessageView({
@@ -259,6 +270,9 @@ export default function App(): React.JSX.Element {
   const canSend =
     state.bridge.status === 'ready' && !state.activeRequestId && input.trim().length > 0
   const elapsed = state.startedAt ? (clock - state.startedAt) / 1000 : state.durationMs / 1000
+  const connectedMcpCount = state.bridge.mcpServers.filter(
+    (server) => server.status === 'connected'
+  ).length
 
   async function sendMessage(): Promise<void> {
     const message = input.trim()
@@ -338,6 +352,28 @@ export default function App(): React.JSX.Element {
         <div className="bridge-state" data-status={state.bridge.status}>
           <span className="status-dot" />
           <div><strong>Python Bridge</strong><small>{state.bridge.detail}</small></div>
+        </div>
+        <div className="mcp-panel" aria-label="MCP Server 状态">
+          <header>
+            <strong>MCP Servers</strong>
+            <small>
+              {state.bridge.mcpServers.length
+                ? connectedMcpCount + '/' + state.bridge.mcpServers.length
+                : '未配置'}
+            </small>
+          </header>
+          {state.bridge.mcpServers.map((server) => (
+            <div className="mcp-server" data-status={server.status} key={server.name}>
+              <span className="mcp-dot" />
+              <div title={server.detail}>
+                <strong>{server.name}</strong>
+                <small>
+                  {MCP_STATUS_LABELS[server.status]}
+                  {server.status === 'connected' ? ' · ' + server.toolCount + ' 个工具' : ''}
+                </small>
+              </div>
+            </div>
+          ))}
         </div>
       </aside>
 
