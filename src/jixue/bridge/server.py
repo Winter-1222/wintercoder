@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import sys
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from pathlib import Path
 from typing import TextIO
 
@@ -36,6 +37,9 @@ from jixue.tools import (
 )
 
 MAX_LINE_BYTES = 1024 * 1024
+MCP_CONNECT_ATTEMPTS = 3
+MCP_CONNECT_TIMEOUT_SECONDS = 20
+MCP_RETRY_DELAYS_SECONDS = (1, 3)
 type EventEmitter = Callable[[Envelope], Awaitable[None]]
 
 
@@ -189,12 +193,42 @@ async def _connect_one_mcp_server(
     clients: list[MCPTransport],
     emit: EventEmitter,
 ) -> None:
-    """连接一个 Server，并把成功或失败都转换成状态事件。"""
+    """连接一个 Server；网络失败时后台重试，最终结果转换成状态事件。"""
 
     await emit(_mcp_status(config.name, "connecting", "正在连接"))
-    client = create_mcp_client(config, project_root)
+    # 每次重试都新建客户端，不复用上一次已经损坏的 HTTP session。
+    for attempt in range(1, MCP_CONNECT_ATTEMPTS + 1):
+        client = create_mcp_client(config, project_root)
+        try:
+            definitions = await asyncio.wait_for(
+                client.connect(),
+                timeout=MCP_CONNECT_TIMEOUT_SECONDS,
+            )
+        except (MCPError, TimeoutError) as error:
+            with suppress(Exception):
+                await client.close()
+            detail = (
+                f"连接超过 {MCP_CONNECT_TIMEOUT_SECONDS} 秒"
+                if isinstance(error, TimeoutError)
+                else str(error)[:500]
+            )
+            if attempt == MCP_CONNECT_ATTEMPTS:
+                final_detail = f"已重试 {MCP_CONNECT_ATTEMPTS} 次：{detail}"
+                sys.stderr.write(f"MCP Server 连接失败：{config.name}：{final_detail}\n")
+                sys.stderr.flush()
+                await emit(_mcp_status(config.name, "failed", final_detail))
+                return
+
+            delay = MCP_RETRY_DELAYS_SECONDS[attempt - 1]
+            retry_detail = f"第 {attempt} 次连接失败，{delay} 秒后重试"
+            sys.stderr.write(f"MCP Server {config.name}：{retry_detail}\n")
+            sys.stderr.flush()
+            await emit(_mcp_status(config.name, "connecting", retry_detail))
+            await asyncio.sleep(delay)
+            continue
+        break
+
     try:
-        definitions = await client.connect()
         wrappers = [MCPToolWrapper(client, definition) for definition in definitions]
         names = [tool.name() for tool in wrappers]
         if len(names) != len(set(names)) or any(tools.get(name) for name in names):
@@ -203,7 +237,8 @@ async def _connect_one_mcp_server(
             tools.register(tool)
         clients.append(client)
     except (MCPError, ValueError) as error:
-        await client.close()
+        with suppress(Exception):
+            await client.close()
         detail = str(error)[:500]
         sys.stderr.write(f"MCP Server 连接失败：{config.name}：{detail}\n")
         sys.stderr.flush()

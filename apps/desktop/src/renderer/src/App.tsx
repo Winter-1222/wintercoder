@@ -124,7 +124,8 @@ function MessageView({
           ) : (
             <pre>{message.content || ' '}</pre>
           )}
-          {!complete && message.status !== 'failed' && <span className="cursor" />}
+          {/* 光标只代表“正在接收流”。已停止的消息不能继续闪，否则会让人误以为任务还没结束。 */}
+          {message.status === 'streaming' && <span className="cursor" />}
         </div>
       </div>
     </article>

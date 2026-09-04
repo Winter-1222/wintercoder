@@ -10,7 +10,7 @@
 - 第 3 章：Agent Loop、停止条件、取消、并发和 Plan/Do 模式已完成。
 - 第 4 章：System Prompt、动态环境提醒和 Prompt Cache 前缀已完成。
 - 第 5 章：五层权限防御、三种权限模式和桌面确认已完成。
-- 第 6 章：stdio/Streamable HTTP、`.env` Key、后台连接、可取消调用和 UI 状态已完成；小规模工具直接发送 Schema。
+- 第 6 章：stdio/HTTP、`.env` Key、后台连接重试、可取消调用和 UI 状态已完成；小规模工具直接发送 Schema。
 - 第 7 章及以后：尚未开始。
 
 写入和命令工具会按权限模式直接执行或显示确认卡片，硬拦截和路径沙箱始终优先。两种 MCP transport 也进入同一个 Registry 和权限链。下一步进入第 7 章，先让超大工具结果写入磁盘，只把预览和路径放进历史。

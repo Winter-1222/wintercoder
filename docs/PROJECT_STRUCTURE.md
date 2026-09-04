@@ -36,7 +36,7 @@ myAgent/
 | `src/jixue/mcp/__init__.py` | MCP 客户端层公开导入入口 |
 | `src/jixue/bridge/bootstrap.py` | 读取项目根目录 `.env`，选择 Fake 或真实 LLM |
 | `src/jixue/bridge/application.py` | 转发任务模式、权限模式、聊天、取消和权限回复，并为 Agent 事件包装信封 |
-| `src/jixue/bridge/server.py` | 从 stdin 收 JSON、从 stdout 发 JSON，并按配置创建 stdio/HTTP 客户端，在后台并行连接和报告状态 |
+| `src/jixue/bridge/server.py` | 从 stdin 收 JSON、从 stdout 发 JSON；后台并行连接 stdio/HTTP，失败时用新客户端重试并报告状态 |
 | `src/jixue/bridge/__main__.py` | 让 `python -m jixue.bridge` 能启动 |
 | `src/jixue/tools/base.py` | 工具合同、ToolResult 和通用 BaseTool |
 | `src/jixue/tools/registry.py` | 注册、启用、禁用、按名称执行工具，并可只导出只读工具定义 |

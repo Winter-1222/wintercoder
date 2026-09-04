@@ -151,6 +151,7 @@ npm run test:electron
 - 在 Agent 中导入 Anthropic SDK：供应商细节会污染核心代码；当前仍只由适配器接触 SDK。
 - 把 XML 标签当安全边界：标签只是提示结构，真正危险操作必须由权限代码拦截。
 - 把文件名原样写进动态系统提醒：恶意文件名也可能携带注入文字；当前 Git 状态只给出变更数量。
+- 让 git status 继承 Bridge 的 stdin：两个读取者可能争抢同一条输入管道，表现为消息停在第 0 轮；当前 Git 子进程固定使用 DEVNULL。
 - 看到缓存没有命中就认为接线错误：短提示词可能达不到服务商缓存门槛，应先确认请求前缀是否稳定。
 
 ## 本章完成边界
@@ -160,6 +161,7 @@ npm run test:electron
 ## 本章变更记录
 
 - 一步完成：新增七段式 System Prompt、动态 reminder、LLM 接口传递、Anthropic SDK 接线、缓存前缀设计、测试和文档。
+- 修复：读取动态 Git 状态时隔离子进程 stdin，避免它干扰 Electron 发给 Bridge 的后续聊天命令。
 
 ## 自测题与答案
 

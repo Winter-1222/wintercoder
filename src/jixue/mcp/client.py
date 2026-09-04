@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AsyncExitStack
@@ -19,6 +20,9 @@ from mcp.client.streamable_http import streamable_http_client
 
 MCP_TOOL_TIMEOUT_SECONDS = 60
 ENV_REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+# SDK 会为一次普通网络失败打印整页 post_writer 堆栈；霁雪已经会给 UI 输出安全错误。
+logging.getLogger("mcp.client.streamable_http").setLevel(logging.CRITICAL)
 
 
 class MCPError(RuntimeError):

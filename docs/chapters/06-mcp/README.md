@@ -17,6 +17,7 @@
 - HTTP 错误不回显完整 URL，避免查询参数里的 API Key 进入日志或模型上下文。
 - HTTP URL 支持 `${变量名}`，真实 Key 只写在项目根目录 `.env`。
 - MCP 工具 60 秒无响应会报错；用户停止时会立即放弃模型或工具等待并释放下一轮聊天。
+- 启动连接失败会在后台再试两次；每次使用新客户端，最终失败才显示红色状态。
 - 退出 Bridge 时关闭 MCP session 和它启动的子进程。
 
 当前工具数量很少，直接把全部 Schema 发给模型。ToolSearch 已评估但暂不实现，原因见后文。
@@ -64,6 +65,8 @@ Electron 启动 Python Bridge
   → create_mcp_client() 查看 transport
       stdio → 启动本地 MCP 子进程
       streamable_http → 连接远程 URL
+  → 网络失败：关闭旧客户端，等待 1 秒、3 秒后重试
+  → 最多 3 次仍失败：发送 mcp.status(failed)
   → 官方 SDK 发送 initialize
   → SDK 自动发送 notifications/initialized
   → list_tools() 获取 Server 的工具定义
@@ -170,7 +173,7 @@ conda activate mycoder
 pytest -q tests/mcp
 ~~~
 
-看到 `4 passed`，表示 stdio、HTTP、配置选择和失败隔离都成功：
+看到 `5 passed`，表示 stdio、HTTP、配置选择、失败隔离和后台重连都成功：
 
 ~~~text
 启动子进程 → 握手 → tools/list → 注册 → tools/call → 关闭子进程
@@ -223,7 +226,7 @@ amap-maps  已连接 · N 个工具
 }
 ~~~
 
-重新运行 `npm run dev`。预期 Python Bridge 仍为绿色，demo 显示“已连接”，broken 显示红色“连接失败”，聊天和内置工具仍可使用。测完删除这段临时配置。
+重新运行 `npm run dev`。预期 Python Bridge 仍为绿色，demo 显示“已连接”；broken 会保持橙色并提示两次重试，第三次仍失败才变红。聊天和内置工具始终可用。测完删除这段临时配置。
 
 ## 为什么现在不做 ToolSearch
 
@@ -255,6 +258,8 @@ Claude 原生 ToolSearch 在服务端搜索：客户端仍发送全部 Schema，
 - 在连接 MCP 之前才启动 Bridge：一个慢 Server 会让整个界面一直停在“正在连接”。
 - 只把状态直接推给 Renderer：页面尚未订阅时可能丢事件，所以 Main 还要缓存状态。
 - 串行连接多个 Server：第一个超时会挡住后面的正常 Server，本项目为每个 Server 建立独立任务。
+- 复用失败连接继续重试：HTTP session 可能已经损坏，所以每一次都创建全新客户端。
+- 后台进程继承 Bridge 的 stdin：它可能干扰后续聊天命令；读取 Git 状态的子进程已经固定使用 DEVNULL。
 - 期待 Fake 自动选择 MCP 工具：Fake 只用于自动测试；桌面全链路请用真实模型。
 
 ## 变更记录
@@ -263,6 +268,8 @@ Claude 原生 ToolSearch 在服务端搜索：客户端仍发送全部 Schema，
 - 第 2 步：完成并行后台连接、失败隔离、`mcp.status` 事件、Main 状态缓存和侧边栏展示。
 - 第 3 步：完成 Streamable HTTP、transport 配置选择、本地真实 HTTP 测试和高德手测说明；ToolSearch 经评估后暂缓。
 - 修复：模型或远程工具卡住时可以立即停止并继续聊天；MCP Key 改为从项目 `.env` 占位替换。
+- 后台重连：单次连接限时 20 秒，失败后间隔 1 秒、3 秒重试，三次失败才结束。
+- 稳定性修复：隔离 Git 子进程与 Bridge 输入管道；取消后的消息不再显示流式光标，并可继续发送新消息。
 
 ## 自测题与答案
 
@@ -301,3 +308,7 @@ Claude 原生 ToolSearch 在服务端搜索：客户端仍发送全部 Schema，
 **问：`.env` 已经有高德 Key，为什么配置里还要写 `${AMAP_MCP_KEY}`？**
 
 答：`.env` 负责保存秘密值，配置负责说明这个值应该放在 URL 的哪个位置。启动时才把两者组合，因此 Key 不需要重复，也不会进入 Git。
+
+**问：为什么重连时不复用原来的 `StreamableHTTPMCPClient`？**
+
+答：失败可能已经关闭内部消息通道。新建客户端能拿到全新的 HTTP session，不会把第一次连接留下的坏状态带进下一次。

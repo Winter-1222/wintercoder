@@ -98,6 +98,9 @@ def _read_git_status(project_root: Path) -> str:
         completed = subprocess.run(
             ["git", "status", "--porcelain", "--untracked-files=no"],
             cwd=project_root,
+            # Bridge 自己正在读取 stdin。子进程如果继承同一条管道，可能和
+            # Bridge 抢输入，导致下一条聊天命令迟迟得不到处理。
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             encoding="utf-8",
