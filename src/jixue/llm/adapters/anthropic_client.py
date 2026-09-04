@@ -64,14 +64,26 @@ class AnthropicLLMClient:
         sdk_tools = cast(list[ToolParam], [dict(tool) for tool in tools])
         tool_buffers: dict[int, tuple[str, str, list[str]]] = {}
         try:
-            async with self._get_client().messages.stream(
-                model=self._config.model,
-                max_tokens=self._max_tokens,
-                system=system,
-                messages=sdk_messages,
-                tools=sdk_tools,
-                cache_control={"type": "ephemeral"},
-            ) as stream:
+            # 摘要请求传入空工具列表时，连 tools 字段本身也不发送。
+            # 这比 tools=[] 更明确，也兼容不接受空工具数组的 Anthropic 协议端点。
+            if sdk_tools:
+                stream_context = self._get_client().messages.stream(
+                    model=self._config.model,
+                    max_tokens=self._max_tokens,
+                    system=system,
+                    messages=sdk_messages,
+                    tools=sdk_tools,
+                    cache_control={"type": "ephemeral"},
+                )
+            else:
+                stream_context = self._get_client().messages.stream(
+                    model=self._config.model,
+                    max_tokens=self._max_tokens,
+                    system=system,
+                    messages=sdk_messages,
+                    cache_control={"type": "ephemeral"},
+                )
+            async with stream_context as stream:
                 async for event in stream:
                     if event.type == "content_block_start":
                         block = event.content_block

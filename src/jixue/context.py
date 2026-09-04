@@ -31,9 +31,89 @@ MAX_ARTIFACT_SEARCH_MATCHES = 100
 ACTIVE_RESULT_TRIGGER_CHARACTERS = 200_000
 ACTIVE_RESULT_TARGET_CHARACTERS = 120_000
 KEEP_RECENT_TOOL_ROUNDS = 3
+KEEP_RECENT_CONVERSATION_TURNS = 2
 ARTIFACT_DIRECTORY = Path(".jixue") / "tool-results"
 _SAFE_ARTIFACT_ID = re.compile(r"[A-Za-z0-9_-]+")
 _ARTIFACT_ID_IN_RESULT = re.compile(r"artifact_id[：:]\s*([A-Za-z0-9_-]+)")
+_SUMMARY_BLOCK = re.compile(r"<summary>\s*(.*?)\s*</summary>", re.DOTALL)
+_REQUIRED_SUMMARY_SECTIONS = (
+    "主要请求和意图",
+    "关键技术概念",
+    "文件和代码段",
+    "错误和修复",
+    "问题解决过程",
+    "所有用户消息",
+    "待办任务",
+    "当前工作",
+    "可能的下一步",
+)
+MIN_COMPACTION_SUMMARY_CHARACTERS = 120
+
+# 摘要是一次独立的模型任务，不沿用 Coding Agent 的角色，也完全不提供工具。
+COMPACTION_SYSTEM_PROMPT = """你是霁雪的上下文摘要器。
+你的唯一任务是忠实压缩给定对话，不能调用工具，不能继续执行原任务。
+先在 <analysis> 中整理草稿，再在 <summary> 中给出最终摘要。
+最终摘要必须比原对话短，并保留继续工作所需的事实；不要输出其他 XML 标签。
+"""
+
+COMPACTION_REQUEST = """<jixue-compaction-request>
+禁止调用任何工具。只总结上面的较早对话，不要回答其中的问题或继续执行任务。
+请先输出 <analysis> 草稿，再输出 <summary> 正文。正文必须简洁且包含以下九部分：
+1. 主要请求和意图
+2. 关键技术概念
+3. 文件和代码段
+4. 错误和修复
+5. 问题解决过程
+6. 所有用户消息（尽量保留原文）
+7. 待办任务
+8. 当前工作（最详细）
+9. 可能的下一步
+</jixue-compaction-request>"""
+
+
+def with_compaction_request(history: Sequence[APIMessage]) -> list[APIMessage]:
+    """在待摘要历史末尾追加指令，并维持 API 要求的角色交替。"""
+
+    result = list(history)
+    if result and result[-1].role == "user" and isinstance(result[-1].content, str):
+        result[-1] = APIMessage(
+            "user",
+            f"{result[-1].content}\n\n{COMPACTION_REQUEST}",
+        )
+    else:
+        result.append(APIMessage("user", COMPACTION_REQUEST))
+    return result
+
+
+def extract_compaction_summary(response: str) -> str:
+    """只接受完整且包含九部分的 summary，防止一句“无”覆盖旧历史。"""
+
+    match = _SUMMARY_BLOCK.search(response)
+    summary = match.group(1).strip() if match else ""
+    if not summary:
+        raise ValueError("模型没有返回完整的 <summary> 摘要")
+    missing = [title for title in _REQUIRED_SUMMARY_SECTIONS if title not in summary]
+    if missing:
+        raise ValueError(f"压缩摘要缺少必要章节：{'、'.join(missing)}")
+    if len(summary) < MIN_COMPACTION_SUMMARY_CHARACTERS:
+        raise ValueError("压缩摘要过短，无法安全替代旧历史")
+    return summary
+
+
+def api_text_characters(history: Sequence[APIMessage]) -> int:
+    """估算摘要前的文本长度，用来拒绝越压越长的无效摘要。"""
+
+    total = 0
+    for message in history:
+        if isinstance(message.content, str):
+            total += len(message.content)
+            continue
+        for block in message.content:
+            if isinstance(block, APITextBlock):
+                total += len(block.text)
+            elif isinstance(block, APIToolResultBlock):
+                total += len(block.content)
+    return total
 
 
 @dataclass(slots=True)

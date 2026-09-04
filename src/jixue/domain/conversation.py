@@ -87,6 +87,10 @@ class ConversationManager:
 
     def __init__(self, messages: Sequence[Message] | None = None) -> None:
         self._messages = list(messages or [])
+        # 摘要只改变发送给模型的视图；原消息继续供 UI 和复盘使用。
+        self._summary: str | None = None
+        self._summary_until = 0
+        self._system_usage = Usage()
 
     @property
     def messages(self) -> tuple[Message, ...]:
@@ -95,8 +99,18 @@ class ConversationManager:
     @property
     def total_usage(self) -> Usage:
         return Usage(
-            sum(message.usage.input_tokens for message in self._messages),
-            sum(message.usage.output_tokens for message in self._messages),
+            self._system_usage.input_tokens
+            + sum(message.usage.input_tokens for message in self._messages),
+            self._system_usage.output_tokens
+            + sum(message.usage.output_tokens for message in self._messages),
+        )
+
+    def record_system_usage(self, usage: Usage) -> None:
+        """记录摘要等后台模型调用，防止状态栏累计 Token 在下一轮倒退。"""
+
+        self._system_usage = Usage(
+            self._system_usage.input_tokens + usage.input_tokens,
+            self._system_usage.output_tokens + usage.output_tokens,
         )
 
     def add_user(self, content: str) -> None:
@@ -128,15 +142,61 @@ class ConversationManager:
             )
 
     def to_api_format(self) -> list[APIMessage]:
-        """过滤未完成消息，并合并相邻的相同角色。"""
+        """返回摘要边界之后的模型视图；原始 messages 属性不受影响。"""
+
+        return self._api_view()
+
+    def prepare_compaction(
+        self,
+        keep_recent_turns: int = 2,
+    ) -> tuple[list[APIMessage], int, int] | None:
+        """准备要摘要的旧前缀，但不修改状态；最近完整对话轮保留原文。"""
+
+        if keep_recent_turns < 1:
+            raise ValueError("至少保留 1 个最近对话轮")
+        turn_starts = _complete_turn_starts(self._messages, self._summary_until)
+        if len(turn_starts) <= keep_recent_turns:
+            return None
+
+        cutoff = turn_starts[-keep_recent_turns]
+        source = self._api_view(end=cutoff)
+        compacted_messages = sum(
+            message.status is MessageStatus.COMPLETE and bool(message.content.strip())
+            for message in self._messages[self._summary_until : cutoff]
+        )
+        return source, cutoff, compacted_messages
+
+    def apply_compaction(self, summary: str, cutoff: int) -> None:
+        """摘要校验成功后一次性移动边界；这是手动压缩唯一的写入点。"""
+
+        clean_summary = summary.strip()
+        if not clean_summary:
+            raise ValueError("压缩摘要不能为空")
+        if not self._summary_until < cutoff < len(self._messages):
+            raise ValueError("压缩边界已经过期")
+        if cutoff not in _complete_turn_starts(self._messages, self._summary_until):
+            raise ValueError("压缩边界必须位于用户消息之前")
+        self._summary = clean_summary
+        self._summary_until = cutoff
+
+    def _api_view(self, *, end: int | None = None) -> list[APIMessage]:
+        """拼出“摘要确认对 + 边界后原文”，并保持 user/assistant 交替。"""
 
         result: list[APIMessage] = []
-        for message in self._messages:
+        if self._summary:
+            result.extend(
+                (
+                    APIMessage("user", _summary_reminder(self._summary)),
+                    APIMessage("assistant", "我已了解以上压缩摘要，将从这里继续。"),
+                )
+            )
+        for message in self._messages[self._summary_until : end]:
             content = message.content.strip()
             if message.status is not MessageStatus.COMPLETE or not content:
                 continue
             if result and result[-1].role == message.role:
                 previous = result[-1]
+                assert isinstance(previous.content, str)
                 result[-1] = APIMessage(previous.role, f"{previous.content}\n\n{content}")
             else:
                 result.append(APIMessage(message.role, content))
@@ -146,3 +206,43 @@ class ConversationManager:
         if result[0].role != "user":
             raise ConversationError("对话必须从 user 开始")
         return result
+
+
+def _is_complete(message: Message, role: Role) -> bool:
+    """压缩边界只认完整且非空的普通聊天消息。"""
+
+    return (
+        message.role == role
+        and message.status is MessageStatus.COMPLETE
+        and bool(message.content.strip())
+    )
+
+
+def _complete_turn_starts(messages: Sequence[Message], start: int) -> list[int]:
+    """按真正发送给 API 的合并规则，找出每个完整 user→assistant 轮的起点。"""
+
+    groups: list[tuple[Role, int]] = []
+    for index in range(start, len(messages)):
+        message = messages[index]
+        if message.status is not MessageStatus.COMPLETE or not message.content.strip():
+            continue
+        # 两条连续 user 在 API 视图里会合并为一条，因此轮次起点必须取第一条。
+        if not groups or groups[-1][0] != message.role:
+            groups.append((message.role, index))
+    return [
+        index
+        for position, (role, index) in enumerate(groups[:-1])
+        if role == "user" and groups[position + 1][0] == "assistant"
+    ]
+
+
+def _summary_reminder(summary: str) -> str:
+    """摘要属于系统补充上下文，不应被模型误认为新的用户要求。"""
+
+    return (
+        "<system-reminder>\n"
+        "这里之前的对话已经被压缩。摘要用于继续任务，不是新的用户消息。"
+        "若需要文件的精确内容，请重新调用读取工具，不要仅凭摘要猜测。\n"
+        f"<conversation-summary>\n{summary}\n</conversation-summary>\n"
+        "</system-reminder>"
+    )

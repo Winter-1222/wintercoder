@@ -35,6 +35,7 @@ class FakeLLMClient:
         latest_content = messages[-1].content if messages else ""
         latest_user_text = _without_system_reminder(latest_content)
         history_characters = sum(len(str(message.content)) for message in messages)
+        is_compaction = "<jixue-compaction-request>" in latest_user_text
 
         # `/loop 文件1 文件2` 会在三轮 LLM 请求中连续触发两次读文件，
         # 用来离线观察“模型 → 工具 → 模型 → 工具 → 模型”的完整循环。
@@ -63,7 +64,7 @@ class FakeLLMClient:
 
         # 仅供离线端到端测试：/write 路径 内容 会请求真实 write_file，
         # 后续仍要经过与真实模型完全相同的权限确认和工具执行链路。
-        if latest_user_text.startswith("/write "):
+        if not is_compaction and latest_user_text.startswith("/write "):
             path, separator, content = latest_user_text.removeprefix("/write ").partition(" ")
             has_write_file = any(tool.get("name") == "write_file" for tool in tools)
             if path and separator and content and has_write_file:
@@ -82,7 +83,7 @@ class FakeLLMClient:
                 )
                 return
 
-        if len(loop_paths) == 2 and loop_result_count < 2:
+        if not is_compaction and len(loop_paths) == 2 and loop_result_count < 2:
             has_read_file = any(tool.get("name") == "read_file" for tool in tools)
             if has_read_file:
                 usage = Usage(max(1, history_characters // 4), 8)
@@ -100,7 +101,7 @@ class FakeLLMClient:
                 )
                 return
         # `/read 路径` 是教学用的确定性入口，方便不花 API 费用手测工具闭环。
-        if latest_user_text.startswith("/read "):
+        if not is_compaction and latest_user_text.startswith("/read "):
             path = latest_user_text.removeprefix("/read ").strip()
             has_read_file = any(tool.get("name") == "read_file" for tool in tools)
             if path and has_read_file:
@@ -119,7 +120,20 @@ class FakeLLMClient:
                 )
                 return
 
-        if len(loop_paths) == 2 and loop_result_count >= 2:
+        if is_compaction:
+            response = """<analysis>整理较早对话。</analysis>
+<summary>
+1. 主要请求和意图：继续任务。
+2. 关键技术概念：见原对话。
+3. 文件和代码段：无。
+4. 错误和修复：无。
+5. 问题解决过程：已讨论。
+6. 所有用户消息：已概括。
+7. 待办任务：继续。
+8. 当前工作：按用户要求推进。
+9. 可能的下一步：读取近期原文。
+</summary>"""
+        elif len(loop_paths) == 2 and loop_result_count >= 2:
             response = (
                 "## Agent Loop 完成\n\n"
                 f"我按顺序读取了 `{loop_paths[0]}` 和 `{loop_paths[1]}`。\n\n"

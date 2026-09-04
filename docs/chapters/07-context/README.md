@@ -2,7 +2,7 @@
 
 本章解决一个问题：Agent 工作久了以后，怎样避免把越来越多的内容全部塞给模型。
 
-当前完成了前两步：**单个大结果落盘**和**活动上下文视图**。手动压缩和自动压缩还没有实现。
+当前完成了前三步：**单个大结果落盘**、**活动上下文视图**和**手动 `/compact`**。自动压缩还没有实现。
 
 ## 1. 这一小步完成了什么
 
@@ -14,20 +14,27 @@
 - `.jixue`、`.env` 和 `.env.*` 不允许被文件读取与搜索工具访问。
 - 同一条长任务的工具结果超过 200,000 字符后，旧结果只在模型视图中变成短占位符。
 - 最近 3 个完整工具轮保持原文；UI 工具卡片和本次任务的 `full_history` 不被改写。
+- 输入精确的 `/compact`，可以把较早的普通对话整理成摘要，同时保留最近 2 个完整对话轮。
+- 摘要使用一次独立的无工具模型请求；只有摘要完整、非空并且确实更短时才会应用。
+- 原始消息仍留在内存和页面中，压缩只改变下一次发给模型的消息视图。
 
 这里的 artifact 可以先理解成“工具大结果的临时档案”。它不是长期记忆，也不是聊天记录。
 
 ## 2. 推荐阅读顺序
 
 1. `src/jixue/context.py`
-   先看 `ToolResultStore` 怎样落盘，再看 `ActiveContext.build` 怎样生成临时视图。
-2. `src/jixue/agent.py`
-   搜索 `_execute_tool_call` 和 `active_context.build(full_history)`，看两层保护接在哪里。
-3. `src/jixue/tools/read_artifact.py`
+   依次看大结果落盘、`ActiveContext.build`、摘要提示词和 `<summary>` 提取。
+2. `src/jixue/domain/conversation.py`
+   看 `prepare_compaction`、`apply_compaction` 和 `_api_view` 怎样保存摘要边界。
+3. `src/jixue/agent.py`
+   搜索 `clean_text == "/compact"` 和 `_compact_context`，看命令怎样执行并产生事件。
+4. `src/jixue/llm/adapters/anthropic_client.py`
+   看无工具摘要请求为什么连 `tools` 字段也不发送。
+5. `src/jixue/tools/read_artifact.py`
    看模型怎样按需取回档案中的小片段。
-4. `src/jixue/tools/read_file.py`
+6. `src/jixue/tools/read_file.py`
    看普通文件怎样按起止行读取。
-5. `src/jixue/bridge/server.py`
+7. `src/jixue/bridge/server.py`
    看 `read_artifact` 怎样注册进 Agent 的工具列表。
 
 第一遍只顺着上面的链路读，不必先研究每个校验分支。
@@ -102,9 +109,62 @@ user:      tool_result(id=call_1, 原始结果)  变成短占位符
 
 UI 不使用 `active_history`。工具执行时发出的 `tool_result` 事件仍带当时的完整可见结果，所以页面上的旧工具卡片不会突然消失。
 
-注意：这里的 `full_history` 只存在于一次 `Agent.run()` 中。任务结束后，目前只把用户文字和最终回答留在 `ConversationManager`；跨重启持久化属于第 8 章。
+注意：这里的 `full_history` 只存在于一次 `Agent.run()` 中。任务结束后，只把用户文字和最终回答留在 `ConversationManager`，上一轮的 `tool_use` 和 `tool_result` 不会直接进入手动摘要；重要工具结论应先体现在最终回答中。手动 `/compact` 处理的是这些普通对话；跨重启持久化仍属于第 8 章。
 
-## 5. 落盘以后为什么仍可能占上下文
+## 5. 手动 `/compact` 怎样跑起来
+
+`/compact` 继续走普通聊天通道，所以 Electron 不需要增加另一套 IPC 和页面状态。但 Agent 会在写入普通历史之前拦截这个精确命令：
+
+```text
+输入 /compact
+  ↓ Renderer 按普通消息发送 chat.send
+BridgeApplication 调用 Agent.run("/compact")
+  ↓ Agent 识别命令，不执行 add_user
+ConversationManager.prepare_compaction(keep_recent_turns=2)
+  ├─ 不足 3 个完整对话轮：提示“历史不足”，不调用模型
+  └─ 足够：取出较早前缀，最近 2 轮保留原文
+              ↓
+      追加九部分摘要要求
+              ↓
+      self._llm.stream(..., tools=空, system=摘要专用提示词)
+              ↓
+      内部收集输出，页面不会看到半份摘要
+              ↓
+      只提取完整的 <summary>，并检查它确实比原文短
+              ↓
+      apply_compaction(summary, cutoff)
+              ↓
+      stream_text 显示完成提示
+      turn_complete → loop_complete → 输入框恢复
+```
+
+摘要要求模型先用 `<analysis>` 整理草稿，再在 `<summary>` 中保留九部分：用户意图、技术概念、文件与代码、错误与修复、解决过程、用户消息、待办、当前工作和下一步。程序只保存 `<summary>`。
+
+核心伪代码只有四步：
+
+```python
+source, cutoff, count = conversation.prepare_compaction(keep_recent_turns=2)
+raw = await summarize(source, tools=())
+summary = extract_compaction_summary(raw)
+conversation.apply_compaction(summary, cutoff)
+```
+
+这里的“完整对话轮”不是简单数数组元素，而是按真正的 API 清洗规则计算：一个有效 user 分组后面跟着一个有效 assistant 分组才算一轮；空消息、失败消息和取消消息不会参与，相邻同角色消息会先合并。这样压缩边界不会切在半轮对话中间。
+
+真正代码还会检查九部分是否齐全、摘要不能过短、模型必须以 `end_turn` 正常结束，而且摘要要比原文短。网络错误、模型误调工具、标签不完整、输出被截断、摘要反而更长，都会在 `apply_compaction` 前失败，所以原历史不会被半成品覆盖；点击停止也会保留原历史。
+
+下一条普通消息到来时，`to_api_format()` 生成的模型视图是：
+
+```text
+user:      <system-reminder>较早对话摘要</system-reminder>
+assistant: 我已了解以上压缩摘要，将从这里继续。
+...最近 2 个完整 user/assistant 对话轮...
+user:      用户的新问题
+```
+
+固定的 assistant 确认句用于维持 API 的角色交替，不是模型现场回复。页面仍保留旧聊天；`/compact` 和完成提示只是页面操作记录，不进入下一次模型历史。
+
+## 6. 落盘以后为什么仍可能占上下文
 
 落盘不是让内容“永远免费”，而是把一次性塞入 60,000 字符，改成模型按需要取 8,000 字符。
 
@@ -119,7 +179,7 @@ UI 不使用 `active_history`。工具执行时发出的 `tool_result` 事件仍
 
 所以 `read_artifact` 返回的片段仍会占用上下文。真正的收益是：**由模型选择需要的少量内容，而不是无条件装入全部内容。**
 
-## 6. 怎样按需读取
+## 7. 怎样按需读取
 
 `read_artifact` 不接受任意文件路径，只接受落盘提示中的 `artifact_id`。
 
@@ -160,7 +220,7 @@ UI 不使用 `active_history`。工具执行时发出的 `tool_result` 事件仍
 
 不写行号仍可读取整个文件；如果结果过大，仍会经过统一落盘保护。
 
-## 7. 文件为什么不会反复写
+## 8. 文件为什么不会反复写
 
 档案名来自唯一的 `tool_use_id`，并附加短哈希。写入使用 Python 的 `x` 模式：
 
@@ -171,7 +231,7 @@ UI 不使用 `active_history`。工具执行时发出的 `tool_result` 事件仍
 
 `.jixue/` 已被 Git 忽略，工具大结果不会进入提交记录。
 
-## 8. 启动与手动测试
+## 9. 启动与手动测试
 
 在项目根目录启动：
 
@@ -213,7 +273,19 @@ conda run --no-capture-output -n mycoder python -m pytest tests/test_context.py
 
 手动回归时可以让真实模型完成一个多次读取的任务，确认旧工具卡片仍在、最终回复正常、停止按钮仍可用。
 
-## 9. 自动化检查
+手动测试 `/compact` 时，先完成至少 5 个内容较充实的普通对话轮。可以沿用当前真实开发聊天，也可以在第一轮告诉模型“我的测试代号是冬青-729”，再连续讨论几个具体问题。前 3 轮应明显长于一份摘要，最后 2 轮会保留原文。
+
+然后发送精确命令：
+
+```text
+/compact
+```
+
+预期没有工具卡片，页面最后显示“上下文压缩完成”，状态栏计入这次摘要请求的 Token，随后输入框恢复。旧聊天仍在页面上。接着询问“我的测试代号是什么”，模型应能从摘要中回答。只有 1～2 个完整对话轮时执行命令，则应提示历史不足，并且不调用模型。若待压缩前缀本身很短，九部分摘要可能没有原文短；程序会拒绝应用，这是正常保护。
+
+还可以在压缩期间立刻点击停止。预期页面结束流式状态、输入框恢复，下一条普通消息仍能使用压缩前历史。发送“请解释 `/compact` 是什么”不应触发压缩，因为只有去掉首尾空白后完全等于 `/compact` 才是命令。
+
+## 10. 自动化检查
 
 ```powershell
 conda run --no-capture-output -n mycoder pytest
@@ -226,7 +298,7 @@ npm run test:electron
 
 测试文件位于本机 `tests/`，被 Git 忽略，不会提交。
 
-## 10. 常见问题
+## 11. 常见问题
 
 ### 为什么不把完整内容放进 metadata？
 
@@ -244,16 +316,25 @@ metadata 会交给界面。如果偷偷把完整结果放进去，内存和进�
 
 ### 当前已经解决所有上下文增长了吗？
 
-没有。目前解决了“单个工具结果特别大”和“同一任务中旧工具结果不断累积”。很长的用户问题、模型回复以及跨任务普通对话还没有摘要，下一步处理手动压缩。
+没有。目前解决了单个大结果、同一任务中的旧工具结果，以及用户主动触发的普通对话摘要。系统还不会按上下文预算自动判断何时压缩，这是下一步。
 
 另外，当前工具仍是先在 Python 进程里得到完整结果，再判断是否落盘；这一小步保护的是模型上下文，不是无限大的进程内存。真正的超大命令输出以后可再改成边产生边写盘，本章先保持代码简单。
 
-## 11. 变更记录
+### 为什么摘要请求不能带工具？
+
+摘要模型只需要整理已有文字。如果继续发送工具 Schema，模型可能误以为应该执行原任务并请求工具。霁雪传入空工具列表，Anthropic 适配器会进一步省略整个 `tools` 字段。
+
+### `/compact` 会释放 Python 内存或保存会话吗？
+
+不会。原消息仍保存在当前进程内，压缩只缩小模型请求视图；关闭程序后也不会恢复。会话 JSONL 和长期记忆属于第 8 章。
+
+## 12. 变更记录
 
 - 第 1 步：加入大工具结果落盘、有界预览、`read_artifact` 和 `read_file` 行范围读取。
 - 第 2 步：加入 `full_history → active_history → LLM` 视图，成轮替换旧工具结果。
+- 第 3 步：加入手动 `/compact`、九部分结构化摘要、最近 2 轮原文保留和失败回滚。
 
-## 12. 自测题与答案
+## 13. 自测题与答案
 
 ### 1）50,000 字符的结果会落盘吗？
 
@@ -277,7 +358,7 @@ metadata 会交给界面。如果偷偷把完整结果放进去，内存和进�
 
 ### 6）本步骤和自动压缩有什么区别？
 
-当前两步只处理工具结果；自动压缩会在整个活动上下文接近模型窗口上限时，把较旧的普通对话也整理成结构化摘要。
+前三步分别处理单个大结果、同一任务的旧工具结果和用户主动触发的普通对话摘要；自动压缩以后会按上下文预算自行决定何时运行。
 
 ### 7）`full_history` 和 `active_history` 有什么区别？
 
@@ -290,3 +371,23 @@ metadata 会交给界面。如果偷偷把完整结果放进去，内存和进�
 ### 9）为什么不能直接删除旧的 `tool_result`？
 
 模型请求中的 `tool_use` 和 `tool_result` 必须用相同 ID 配对。删除其中一边可能让供应商直接拒绝整个请求，所以只替换内容、不删结构。
+
+### 10）`/compact` 是普通用户消息吗？
+
+不是。它借用 `chat.send` 到达 Agent，但会在 `add_user` 前被识别，因此模型历史里不会出现这条命令。
+
+### 11）为什么保留最近 2 个完整对话轮？
+
+最近内容通常最接近当前工作，保留原文能减少摘要遗漏细节；更早内容才交给模型整理。
+
+### 12）压缩到一半失败或被取消会怎样？
+
+原视图保持不变。只有完整摘要通过标签和长度校验后，`apply_compaction` 才会移动摘要边界。
+
+### 13）为什么压缩后页面上的旧消息还在？
+
+页面和 `ConversationManager.messages` 保留原记录；压缩改变的是 `to_api_format()` 生成的模型视图。
+
+### 14）手动压缩和自动压缩有什么区别？
+
+手动压缩只在用户输入 `/compact` 时运行；自动压缩以后会根据上下文预算主动触发，目前还没有实现。

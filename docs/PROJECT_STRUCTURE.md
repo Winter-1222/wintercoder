@@ -23,16 +23,16 @@ myAgent/
 
 | 文件 | 职责 |
 | --- | --- |
-| `src/jixue/agent.py` | Agent 核心：循环调用 LLM，保存本次任务的 `full_history`，每轮只把 `active_history` 发给模型 |
-| `src/jixue/context.py` | 上下文保护：大结果落盘；工具结果总量过线后，成轮替换模型视图中的旧结果 |
+| `src/jixue/agent.py` | Agent 核心：循环调用 LLM、生成活动视图；精确识别 `/compact`，用无工具请求生成摘要并在成功后提交 |
+| `src/jixue/context.py` | 上下文保护：大结果落盘、旧工具结果活动视图，以及摘要提示词、标签提取和长度检查 |
 | `src/jixue/prompt.py` | 生成稳定的七段式 System Prompt，以及每轮动态的任务模式、权限模式、时间和 Git 提醒 |
 | `src/jixue/permission.py` | 权限判断核心：危险命令、路径沙箱、精确安全规则、三种权限模式和 ALLOW/DENY/ASK 结果 |
-| `src/jixue/domain/conversation.py` | 普通消息、工具内容块、多轮历史，以及完成/取消消息的 API 前清洗 |
+| `src/jixue/domain/conversation.py` | 保存普通消息原文、摘要和压缩边界；生成“摘要 + 最近原文”的 API 视图并累计后台摘要 Token |
 | `src/jixue/domain/events.py` | Electron 与 Python 之间的一行 JSON 信封 |
 | `src/jixue/llm/base.py` | 霁雪自己的 LLM 接口；统一接收 system、messages、tools 并输出流事件 |
-| `src/jixue/llm/fake.py` | 离线模拟 LLM；/read、/loop 测读取，/write 只用于权限端到端测试 |
+| `src/jixue/llm/fake.py` | 离线模拟 LLM；支持工具闭环、权限测试和 `/compact` 摘要测试 |
 | `src/jixue/llm/config.py` | 从 `models.yaml` 和环境中生成四字段配置 |
-| `src/jixue/llm/adapters/anthropic_client.py` | 唯一接触 Anthropic SDK，把 system、messages、tools 发给协议端点并翻译流事件 |
+| `src/jixue/llm/adapters/anthropic_client.py` | 唯一接触 Anthropic SDK，翻译流事件；无工具摘要请求会省略整个 `tools` 字段 |
 | `src/jixue/mcp/client.py` | MCP transport 合同、stdio/HTTP 连接、`.env` URL 占位替换、握手、工具发现、限时调用；MCP SDK 只在这里出现 |
 | `src/jixue/mcp/tool.py` | 把 MCP 工具定义和调用结果包装成霁雪统一的 Tool/ToolResult |
 | `src/jixue/mcp/__init__.py` | MCP 客户端层公开导入入口 |
@@ -82,7 +82,7 @@ myAgent/
 | `docs/chapters/04-system-prompt/README.md` | 第四章提示词分层、完整请求链路和手测说明 |
 | `docs/chapters/05-permissions/README.md` | 第五章权限防线、判断链路和分步进度 |
 | `docs/chapters/06-mcp/README.md` | 第六章 MCP 连接、工具包装、完整调用链和手测说明 |
-| `docs/chapters/07-context/README.md` | 第七章大结果落盘、按需读取和后续压缩路线 |
+| `docs/chapters/07-context/README.md` | 第七章大结果、活动视图、手动 `/compact` 链路和测试说明 |
 | `scripts/test-all.ps1` | 顺序执行本地自动化检查 |
 
 本地 `tests/mcp/demo_server.py` 和 `demo_http_server.py` 分别模拟 stdio 与 HTTP

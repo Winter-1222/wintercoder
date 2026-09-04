@@ -12,7 +12,15 @@ from time import perf_counter
 from typing import Any
 from uuid import uuid4
 
-from jixue.context import ActiveContext, ToolResultStore
+from jixue.context import (
+    COMPACTION_SYSTEM_PROMPT,
+    KEEP_RECENT_CONVERSATION_TURNS,
+    ActiveContext,
+    ToolResultStore,
+    api_text_characters,
+    extract_compaction_summary,
+    with_compaction_request,
+)
 from jixue.domain.conversation import (
     APIContentBlock,
     APIMessage,
@@ -161,13 +169,15 @@ class Agent:
         self,
         history: Sequence[APIMessage],
         tool_definitions: Sequence[ToolDefinition],
+        *,
+        system_prompt: str | None = None,
     ) -> AsyncIterator[LLMStreamEvent]:
         """同时等待模型事件和取消信号，取消时关闭正在等待的流。"""
 
         iterator = self._llm.stream(
             history,
             tool_definitions,
-            system=self._system_prompt,
+            system=self._system_prompt if system_prompt is None else system_prompt,
         ).__aiter__()
         while not self._cancel_event.is_set():
             next_event = asyncio.ensure_future(anext(iterator))
@@ -192,14 +202,15 @@ class Agent:
     async def run(self, user_text: str) -> AsyncIterator[AgentEvent]:
         """处理一条用户消息，并在过程发生时立即向外产生事件。"""
 
-        if not user_text.strip():
-            yield _event(
-                AgentEventType.ERROR,
-                code="invalid_input",
-                message="消息文本不能为空",
-                retryable=False,
-                scope="request",
-            )
+        clean_text = user_text.strip()
+        if not clean_text:
+            yield _error_event("invalid_input", "消息文本不能为空")
+            return
+
+        # /compact 是客户端命令，不是用户交给模型的问题，因此不能写进普通历史。
+        if clean_text == "/compact":
+            async for event in self._compact_context():
+                yield event
             return
 
         # asyncio.Event 会绑定首次等待它的事件循环，每次任务都要新建。
@@ -211,7 +222,7 @@ class Agent:
         turn_usage = Usage()
         mode = self._mode
         permission_mode = self._permission_mode
-        self._conversation.add_user(user_text.strip())
+        self._conversation.add_user(clean_text)
 
         try:
             # 时间和 Git 状态会变化，因此放进临时消息，而不是固定 System Prompt。
@@ -226,13 +237,7 @@ class Agent:
                 reminder,
             )
         except ConversationError as error:
-            yield _event(
-                AgentEventType.ERROR,
-                code="conversation_invalid",
-                message=str(error),
-                retryable=False,
-                scope="request",
-            )
+            yield _error_event("conversation_invalid", str(error))
             self._is_running = False
             return
 
@@ -500,10 +505,7 @@ class Agent:
                     message_id=message_id,
                 )
 
-            turn_index = 1 + sum(
-                message.role == "assistant" and message.status is MessageStatus.COMPLETE
-                for message in self._conversation.messages
-            )
+            turn_index = _next_turn_index(self._conversation)
             answer = "".join(chunks)
             if cancelled:
                 # 取消的本轮仍可供 UI 复盘，但 user 和 assistant 都不进入下次 API 历史。
@@ -524,39 +526,174 @@ class Agent:
                     ),
                 )
             # loop_complete 才表示这一条用户任务彻底结束，UI 应在这里解锁输入框。
-            yield _event(
-                AgentEventType.LOOP_COMPLETE,
+            yield self._loop_complete_event(
+                started_at,
+                message_id,
+                iterations,
+                stop_reason,
                 turn_index=turn_index,
-                iterations=iterations,
-                stop_reason=stop_reason,
-                duration_ms=round((perf_counter() - started_at) * 1000),
-                model=self.model_name,
-                message_id=message_id,
                 is_error=reached_limit or invalid_tool_limit_reached,
                 cancelled=cancelled,
-                mode=mode.value,
             )
         except LLMClientError as error:
             self._remember_failed(chunks)
-            yield _event(
-                AgentEventType.ERROR,
-                code=error.code,
-                message=str(error),
-                retryable=error.retryable,
-                scope="request",
-            )
+            yield _error_event(error.code, str(error), retryable=error.retryable)
         except Exception:
             self._remember_failed(chunks)
-            yield _event(
-                AgentEventType.ERROR,
-                code="llm_internal_error",
-                message="模型客户端发生内部错误",
-                retryable=False,
-                scope="request",
-            )
+            yield _error_event("llm_internal_error", "模型客户端发生内部错误")
         finally:
             self._clear_permission()
             self._is_running = False
+
+    async def _compact_context(self) -> AsyncIterator[AgentEvent]:
+        """用一次无工具 LLM 请求摘要旧历史，校验成功后才提交新边界。"""
+
+        self._cancel_event = asyncio.Event()
+        self._is_running = True
+        started_at = perf_counter()
+        message_id = f"msg_{uuid4().hex}"
+        compact_usage = Usage()
+        try:
+            prepared = self._conversation.prepare_compaction(
+                KEEP_RECENT_CONVERSATION_TURNS
+            )
+            if prepared is None:
+                text = "当前可压缩的历史不足；至少需要 3 个完整对话轮，最近 2 轮会保留原文。"
+                self._is_running = False
+                yield _event(
+                    AgentEventType.STREAM_TEXT,
+                    text=text,
+                    message_id=message_id,
+                )
+                yield self._loop_complete_event(
+                    started_at,
+                    message_id,
+                    0,
+                    "nothing_to_compact",
+                )
+                return
+
+            source, cutoff, compacted_messages = prepared
+            raw_response: list[str] = []
+            requested_tool = False
+            complete_received = False
+            summary_stop_reason: str | None = None
+            async for llm_event in self._stream_llm(
+                with_compaction_request(source),
+                (),
+                system_prompt=COMPACTION_SYSTEM_PROMPT,
+            ):
+                # 摘要正文是内部数据，不边生成边展示，避免失败时留下“半份摘要”。
+                if llm_event.type is LLMEventType.TEXT:
+                    raw_response.append(llm_event.text)
+                elif llm_event.type is LLMEventType.TOOL_USE:
+                    requested_tool = True
+                elif llm_event.type is LLMEventType.USAGE:
+                    compact_usage = _add_usage(compact_usage, llm_event.usage)
+                    cumulative = _add_usage(
+                        self._conversation.total_usage,
+                        compact_usage,
+                    )
+                    yield _event(
+                        AgentEventType.USAGE,
+                        turn=_usage(compact_usage),
+                        cumulative=_usage(cumulative),
+                    )
+                elif llm_event.type is LLMEventType.COMPLETE:
+                    complete_received = True
+                    summary_stop_reason = llm_event.stop_reason
+
+            if self._cancel_event.is_set():
+                self._is_running = False
+                yield self._loop_complete_event(
+                    started_at,
+                    message_id,
+                    1,
+                    "cancelled",
+                    cancelled=True,
+                )
+                return
+            if requested_tool:
+                raise ValueError("摘要模型错误地请求了工具，本次压缩未应用")
+            if not complete_received or summary_stop_reason != "end_turn":
+                reason = summary_stop_reason or "未收到完成事件"
+                raise ValueError(f"摘要生成没有正常结束（{reason}），本次压缩未应用")
+
+            summary = extract_compaction_summary("".join(raw_response))
+            if len(summary) >= api_text_characters(source):
+                raise ValueError("摘要没有比原历史更短，本次压缩未应用")
+
+            # 上面任何一步失败都不会到这里；这里是压缩状态唯一的提交点。
+            self._conversation.apply_compaction(summary, cutoff)
+            # 提交成功后立刻关闭取消入口，避免收尾事件之间出现“已停止”的假回执。
+            self._is_running = False
+            text = (
+                f"上下文压缩完成：已将 {compacted_messages} 条较早消息整理为摘要，"
+                f"最近 {KEEP_RECENT_CONVERSATION_TURNS} 个对话轮保留原文。"
+            )
+            yield _event(
+                AgentEventType.STREAM_TEXT,
+                text=text,
+                message_id=message_id,
+            )
+            yield _event(
+                AgentEventType.TURN_COMPLETE,
+                iteration=1,
+                stop_reason="compacted",
+                tool_calls=0,
+            )
+            yield self._loop_complete_event(
+                started_at,
+                message_id,
+                1,
+                "compacted",
+            )
+        except LLMClientError as error:
+            self._is_running = False
+            yield _error_event(error.code, str(error), retryable=error.retryable)
+        except (ConversationError, ValueError) as error:
+            self._is_running = False
+            yield _error_event("compact_failed", str(error))
+        except Exception:
+            self._is_running = False
+            yield _error_event(
+                "compact_internal_error",
+                "上下文压缩发生内部错误，原历史没有改变",
+            )
+        finally:
+            # 摘要请求同样产生费用；无论成功与否，都计入状态栏的会话累计值。
+            self._conversation.record_system_usage(compact_usage)
+            self._is_running = False
+
+    def _loop_complete_event(
+        self,
+        started_at: float,
+        message_id: str,
+        iterations: int,
+        stop_reason: str,
+        *,
+        turn_index: int | None = None,
+        is_error: bool = False,
+        cancelled: bool = False,
+    ) -> AgentEvent:
+        """统一生成任务结束事件，保证普通聊天和管理命令都会解锁 UI。"""
+
+        return _event(
+            AgentEventType.LOOP_COMPLETE,
+            turn_index=(
+                _next_turn_index(self._conversation)
+                if turn_index is None
+                else turn_index
+            ),
+            iterations=iterations,
+            stop_reason=stop_reason,
+            duration_ms=round((perf_counter() - started_at) * 1000),
+            model=self.model_name,
+            message_id=message_id,
+            is_error=is_error,
+            cancelled=cancelled,
+            mode=self._mode.value,
+        )
 
     def _check_tool_call(
         self,
@@ -729,6 +866,18 @@ def _event(event_type: AgentEventType, **payload: object) -> AgentEvent:
     return AgentEvent(event_type, payload)
 
 
+def _error_event(code: str, message: str, *, retryable: bool = False) -> AgentEvent:
+    """所有请求错误都使用同一份结构，前端收到后会结束等待状态。"""
+
+    return _event(
+        AgentEventType.ERROR,
+        code=code,
+        message=message,
+        retryable=retryable,
+        scope="request",
+    )
+
+
 def _append_text(blocks: list[APIContentBlock], text: str) -> None:
     """合并相邻文本，但保留文本块和工具块的先后顺序。"""
 
@@ -742,6 +891,15 @@ def _add_usage(left: Usage, right: Usage) -> Usage:
     return Usage(
         left.input_tokens + right.input_tokens,
         left.output_tokens + right.output_tokens,
+    )
+
+
+def _next_turn_index(conversation: ConversationManager) -> int:
+    """管理命令不写入历史，但结束事件仍需要一个稳定的 UI 轮次编号。"""
+
+    return 1 + sum(
+        message.role == "assistant" and message.status is MessageStatus.COMPLETE
+        for message in conversation.messages
     )
 
 
