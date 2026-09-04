@@ -11,6 +11,13 @@ from jixue.agent import Agent
 from jixue.bridge.application import BridgeApplication
 from jixue.bridge.bootstrap import BridgeBootstrapError, create_runtime_llm
 from jixue.domain.events import Envelope, ProtocolError
+from jixue.llm.base import LLMClient
+from jixue.mcp import (
+    MCPError,
+    MCPToolWrapper,
+    StdioMCPClient,
+    load_stdio_server_configs,
+)
 from jixue.tools import (
     ToolRegistry,
     create_bash_tool,
@@ -89,12 +96,7 @@ def main() -> None:
     for stream in (sys.stdin, sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8")
-    try:
-        llm = create_runtime_llm(Path.cwd())
-    except BridgeBootstrapError as error:
-        sys.stderr.write(f"Bridge 启动配置错误：{error}\n")
-        raise SystemExit(2) from error
-
+    project_root = Path.cwd().resolve()
     tools = ToolRegistry()
     tools.register(create_read_file_tool())
     tools.register(create_glob_tool())
@@ -103,14 +105,46 @@ def main() -> None:
     tools.register(create_write_file_tool())
     tools.register(create_edit_file_tool())
     tools.register(create_bash_tool())
-    agent = Agent(llm, tools=tools)
-    server = BridgeServer(
-        BridgeApplication(agent),
-        sys.stdin,
-        sys.stdout,
-        sys.stderr,
-    )
-    asyncio.run(server.run())
+    try:
+        llm = create_runtime_llm(project_root)
+        asyncio.run(_run_bridge(llm, tools, project_root))
+    except (BridgeBootstrapError, MCPError) as error:
+        sys.stderr.write(f"Bridge 启动配置错误：{error}\n")
+        raise SystemExit(2) from error
+
+
+async def _run_bridge(
+    llm: LLMClient,
+    tools: ToolRegistry,
+    project_root: Path,
+) -> None:
+    """先注册 MCP 工具，再启动 Agent；退出时统一关闭 MCP 子进程。"""
+
+    clients: list[StdioMCPClient] = []
+    try:
+        for config in load_stdio_server_configs(project_root):
+            client = StdioMCPClient(config, project_root)
+            definitions = await client.connect()
+            clients.append(client)
+            for definition in definitions:
+                tools.register(MCPToolWrapper(client, definition))
+            sys.stderr.write(
+                f"MCP Server 已连接：{config.name}（发现 {len(definitions)} 个工具）\n"
+            )
+            sys.stderr.flush()
+
+        # MCP 包装后的工具已经在 Registry 中，Agent Loop 不需要知道它们的来源。
+        agent = Agent(llm, tools=tools)
+        server = BridgeServer(
+            BridgeApplication(agent),
+            sys.stdin,
+            sys.stdout,
+            sys.stderr,
+        )
+        await server.run()
+    finally:
+        for client in reversed(clients):
+            await client.close()
 
 
 if __name__ == "__main__":

@@ -31,9 +31,12 @@ myAgent/
 | `src/jixue/llm/fake.py` | 离线模拟 LLM；/read、/loop 测读取，/write 只用于权限端到端测试 |
 | `src/jixue/llm/config.py` | 从 `models.yaml` 和环境中生成四字段配置 |
 | `src/jixue/llm/adapters/anthropic_client.py` | 唯一接触 Anthropic SDK，把 system、messages、tools 发给协议端点并翻译流事件 |
+| `src/jixue/mcp/client.py` | MCP transport 合同、stdio 连接、握手、工具发现、调用和配置读取；MCP SDK 只在这里出现 |
+| `src/jixue/mcp/tool.py` | 把 MCP 工具定义和调用结果包装成霁雪统一的 Tool/ToolResult |
+| `src/jixue/mcp/__init__.py` | MCP 客户端层公开导入入口 |
 | `src/jixue/bridge/bootstrap.py` | 读取项目根目录 `.env`，选择 Fake 或真实 LLM |
 | `src/jixue/bridge/application.py` | 转发任务模式、权限模式、聊天、取消和权限回复，并为 Agent 事件包装信封 |
-| `src/jixue/bridge/server.py` | 从 stdin 收 JSON、从 stdout 发 JSON，并注册当前内置工具 |
+| `src/jixue/bridge/server.py` | 从 stdin 收 JSON、从 stdout 发 JSON，并在创建 Agent 前注册内置工具和 MCP 工具 |
 | `src/jixue/bridge/__main__.py` | 让 `python -m jixue.bridge` 能启动 |
 | `src/jixue/tools/base.py` | 工具合同、ToolResult 和通用 BaseTool |
 | `src/jixue/tools/registry.py` | 注册、启用、禁用、按名称执行工具，并可只导出只读工具定义 |
@@ -66,6 +69,8 @@ myAgent/
 | 文件 | 职责 |
 | --- | --- |
 | `config/models.yaml` | 三个模型的短名称和真实模型 ID |
+| `config/mcp.json` | 可提交的 MCP Server 公共配置，目前为空 |
+| `config/mcp.local.json` | 本机 MCP 配置，覆盖公共配置并由 Git 忽略 |
 | `docs/ROADMAP.md` | 章节顺序和一周范围 |
 | `docs/chapters/00-foundation/README.md` | 环境准备、启动和测试 |
 | `docs/chapters/01-llm-ui/README.md` | 第一章代码和完整消息链路 |
@@ -73,6 +78,9 @@ myAgent/
 | `docs/chapters/03-agent-loop/README.md` | 第三章 Agent 核心、循环步骤和手测记录 |
 | `docs/chapters/04-system-prompt/README.md` | 第四章提示词分层、完整请求链路和手测说明 |
 | `docs/chapters/05-permissions/README.md` | 第五章权限防线、判断链路和分步进度 |
+| `docs/chapters/06-mcp/README.md` | 第六章 MCP 连接、工具包装、完整调用链和手测说明 |
 | `scripts/test-all.ps1` | 顺序执行本地自动化检查 |
 
-每章目录只允许有一个 `README.md`。测试文件虽然存在于本机，但由 `.gitignore` 排除，不会提交。
+本地 `tests/mcp/demo_server.py` 是 echo MCP Server，`test_stdio_mcp.py` 覆盖真实
+stdio 闭环。每章目录只允许有一个 `README.md`；这些测试文件由 `.gitignore`
+排除，不会提交。
