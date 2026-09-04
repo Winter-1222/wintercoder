@@ -23,8 +23,8 @@ myAgent/
 
 | 文件 | 职责 |
 | --- | --- |
-| `src/jixue/agent.py` | Agent 核心：循环调用 LLM、生成活动视图；精确识别 `/compact`，用无工具请求生成摘要并在成功后提交 |
-| `src/jixue/context.py` | 上下文保护：大结果落盘、旧工具结果活动视图，以及摘要提示词、标签提取和长度检查 |
+| `src/jixue/agent.py` | Agent 核心：循环调用 LLM、生成活动视图；手动和自动压缩共用无工具摘要事务，成功后重建当前任务历史 |
+| `src/jixue/context.py` | 上下文保护：大结果落盘、旧工具结果活动视图、活动历史字符预算，以及摘要提示词与校验 |
 | `src/jixue/prompt.py` | 生成稳定的七段式 System Prompt，以及每轮动态的任务模式、权限模式、时间和 Git 提醒 |
 | `src/jixue/permission.py` | 权限判断核心：危险命令、路径沙箱、精确安全规则、三种权限模式和 ALLOW/DENY/ASK 结果 |
 | `src/jixue/domain/conversation.py` | 保存普通消息原文、摘要和压缩边界；生成“摘要 + 最近原文”的 API 视图并累计后台摘要 Token |
@@ -82,7 +82,7 @@ myAgent/
 | `docs/chapters/04-system-prompt/README.md` | 第四章提示词分层、完整请求链路和手测说明 |
 | `docs/chapters/05-permissions/README.md` | 第五章权限防线、判断链路和分步进度 |
 | `docs/chapters/06-mcp/README.md` | 第六章 MCP 连接、工具包装、完整调用链和手测说明 |
-| `docs/chapters/07-context/README.md` | 第七章大结果、活动视图、手动 `/compact` 链路和测试说明 |
+| `docs/chapters/07-context/README.md` | 第七章大结果、活动视图、手动/自动压缩链路和测试说明 |
 | `scripts/test-all.ps1` | 顺序执行本地自动化检查 |
 
 本地 `tests/mcp/demo_server.py` 和 `demo_http_server.py` 分别模拟 stdio 与 HTTP

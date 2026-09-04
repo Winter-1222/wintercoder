@@ -32,6 +32,9 @@ ACTIVE_RESULT_TRIGGER_CHARACTERS = 200_000
 ACTIVE_RESULT_TARGET_CHARACTERS = 120_000
 KEEP_RECENT_TOOL_ROUNDS = 3
 KEEP_RECENT_CONVERSATION_TURNS = 2
+# 当前模型配置还没有声明精确上下文窗口，先用可测试的字符预算保护请求。
+# 阈值留出模型输出和协议结构空间；后续可随模型配置一起改成更精确的 Token 预算。
+AUTO_COMPACTION_TRIGGER_CHARACTERS = 160_000
 ARTIFACT_DIRECTORY = Path(".jixue") / "tool-results"
 _SAFE_ARTIFACT_ID = re.compile(r"[A-Za-z0-9_-]+")
 _ARTIFACT_ID_IN_RESULT = re.compile(r"artifact_id[：:]\s*([A-Za-z0-9_-]+)")
@@ -114,6 +117,36 @@ def api_text_characters(history: Sequence[APIMessage]) -> int:
             elif isinstance(block, APIToolResultBlock):
                 total += len(block.content)
     return total
+
+
+def api_history_characters(history: Sequence[APIMessage]) -> int:
+    """估算即将发送的活动历史大小，包含文本、工具参数和工具结果。"""
+
+    total = 0
+    for message in history:
+        total += len(message.role)
+        if isinstance(message.content, str):
+            total += len(message.content)
+            continue
+        for block in message.content:
+            if isinstance(block, APITextBlock):
+                total += len(block.text)
+            elif isinstance(block, APIToolUseBlock):
+                total += len(block.id) + len(block.name) + len(str(block.input))
+            elif isinstance(block, APIToolResultBlock):
+                total += len(block.tool_use_id) + len(block.content)
+    return total
+
+
+def needs_auto_compaction(
+    active_history: Sequence[APIMessage],
+    trigger_characters: int = AUTO_COMPACTION_TRIGGER_CHARACTERS,
+) -> bool:
+    """只根据本次即将发送的活动历史判断是否需要自动压缩。"""
+
+    if trigger_characters < 1:
+        raise ValueError("自动压缩触发线必须大于 0")
+    return api_history_characters(active_history) > trigger_characters
 
 
 @dataclass(slots=True)
