@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Sequence
+from uuid import uuid4
 
 from jixue.domain.conversation import APIMessage, APIToolResultBlock, Usage
 from jixue.llm.base import LLMEventType, LLMStreamEvent, ToolDefinition
@@ -71,7 +72,7 @@ class FakeLLMClient:
                 usage = Usage(max(1, history_characters // 4), 8)
                 yield LLMStreamEvent(
                     LLMEventType.TOOL_USE,
-                    tool_use_id="fake_write_1",
+                    tool_use_id=f"fake_write_{uuid4().hex}",
                     tool_name="write_file",
                     tool_input={"path": path, "content": content},
                 )
@@ -89,7 +90,7 @@ class FakeLLMClient:
                 usage = Usage(max(1, history_characters // 4), 8)
                 yield LLMStreamEvent(
                     LLMEventType.TOOL_USE,
-                    tool_use_id=f"fake_loop_{loop_result_count + 1}",
+                    tool_use_id=f"fake_loop_{uuid4().hex}",
                     tool_name="read_file",
                     tool_input={"path": loop_paths[loop_result_count]},
                 )
@@ -108,7 +109,7 @@ class FakeLLMClient:
                 usage = Usage(max(1, history_characters // 4), 8)
                 yield LLMStreamEvent(
                     LLMEventType.TOOL_USE,
-                    tool_use_id="fake_tool_1",
+                    tool_use_id=f"fake_read_{uuid4().hex}",
                     tool_name="read_file",
                     tool_input={"path": path},
                 )

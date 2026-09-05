@@ -1,4 +1,4 @@
-"""第一章全部消息类型与多轮历史管理。"""
+"""统一的会话消息：文字、工具轮和摘要使用同一条序列。"""
 
 from __future__ import annotations
 
@@ -31,14 +31,15 @@ class Usage:
 
 @dataclass(frozen=True, slots=True)
 class Message:
-    """UI 使用的完整消息。"""
+    """会话中的一条消息；UI 通过事件流独立维护显示记录。"""
 
     role: Role
-    content: str
+    content: APIContent
     status: MessageStatus = MessageStatus.COMPLETE
     id: str = field(default_factory=lambda: f"msg_{uuid4().hex}")
     created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
     usage: Usage = field(default_factory=Usage)
+    is_summary: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,14 +84,15 @@ class ConversationError(ValueError):
 
 
 class ConversationManager:
-    """保存内部消息，并生成干净的 API 历史。"""
+    """只保存一份工作消息；清理和摘要直接更新它，不维护平行历史。"""
 
     def __init__(self, messages: Sequence[Message] | None = None) -> None:
         self._messages = list(messages or [])
-        # 摘要只改变发送给模型的视图；原消息继续供 UI 和复盘使用。
-        self._summary: str | None = None
-        self._summary_until = 0
-        self._system_usage = Usage()
+        self._usage = Usage(
+            sum(message.usage.input_tokens for message in self._messages),
+            sum(message.usage.output_tokens for message in self._messages),
+        )
+        self.completed_turns = len(_complete_turn_starts(self._messages))
 
     @property
     def messages(self) -> tuple[Message, ...]:
@@ -98,19 +100,14 @@ class ConversationManager:
 
     @property
     def total_usage(self) -> Usage:
-        return Usage(
-            self._system_usage.input_tokens
-            + sum(message.usage.input_tokens for message in self._messages),
-            self._system_usage.output_tokens
-            + sum(message.usage.output_tokens for message in self._messages),
-        )
+        return self._usage
 
-    def record_system_usage(self, usage: Usage) -> None:
-        """记录摘要等后台模型调用，防止状态栏累计 Token 在下一轮倒退。"""
+    def record_usage(self, usage: Usage) -> None:
+        """账单独立于消息长度，删除旧消息后累计用量也不会倒退。"""
 
-        self._system_usage = Usage(
-            self._system_usage.input_tokens + usage.input_tokens,
-            self._system_usage.output_tokens + usage.output_tokens,
+        self._usage = Usage(
+            self._usage.input_tokens + usage.input_tokens,
+            self._usage.output_tokens + usage.output_tokens,
         )
 
     def add_user(self, content: str) -> None:
@@ -123,117 +120,140 @@ class ConversationManager:
         status: MessageStatus = MessageStatus.COMPLETE,
         usage: Usage | None = None,
     ) -> None:
-        self._messages.append(
-            Message(
-                role="assistant",
-                content=content,
-                status=status,
-                usage=usage or Usage(),
+        self._messages.append(Message("assistant", content, status, usage=usage or Usage()))
+        self.record_usage(usage or Usage())
+        if status is MessageStatus.COMPLETE:
+            self.completed_turns += 1
+
+    def add_tool_round(
+        self,
+        response: Sequence[APIContentBlock],
+        results: Sequence[APIContentBlock],
+    ) -> None:
+        """工具调用与结果一起写入，避免下一次请求出现孤立的工具块。"""
+
+        uses = [block.id for block in response if isinstance(block, APIToolUseBlock)]
+        result_ids = [
+            block.tool_use_id for block in results if isinstance(block, APIToolResultBlock)
+        ]
+        if not uses or uses != result_ids or len(result_ids) != len(results):
+            raise ConversationError("工具调用与结果必须按 ID 完整配对")
+        self._messages.extend(
+            (
+                Message("assistant", tuple(response)),
+                Message("user", tuple(results)),
             )
         )
 
     def cancel_last_user(self) -> None:
-        """把本轮最后一条用户消息标记为取消，保留记录但不再发送给 LLM。"""
+        """取消当前任务的全部消息，包括已经完成的工具轮。"""
 
-        if self._messages and self._messages[-1].role == "user":
-            self._messages[-1] = replace(
-                self._messages[-1],
-                status=MessageStatus.CANCELLED,
+        for index in range(len(self._messages) - 1, -1, -1):
+            message = self._messages[index]
+            self._messages[index] = replace(message, status=MessageStatus.CANCELLED)
+            if message.role == "user" and isinstance(message.content, str):
+                break
+
+    def clear_tool_results(self, contents: Mapping[str, str]) -> None:
+        """只替换工具结果正文，调用 ID、错误标记和消息位置保持不变。"""
+
+        for index, message in enumerate(self._messages):
+            if not isinstance(message.content, tuple):
+                continue
+            blocks = tuple(
+                replace(block, content=contents[block.tool_use_id])
+                if isinstance(block, APIToolResultBlock) and block.tool_use_id in contents
+                else block
+                for block in message.content
             )
+            if blocks != message.content:
+                self._messages[index] = replace(message, content=blocks)
 
     def to_api_format(self) -> list[APIMessage]:
-        """返回摘要边界之后的模型视图；原始 messages 属性不受影响。"""
+        """仅做协议转换和未完成消息过滤，不再承担上下文管理。"""
 
-        return self._api_view()
+        return _to_api_messages(self._messages)
 
     def prepare_compaction(
         self,
         keep_recent_turns: int = 2,
     ) -> tuple[list[APIMessage], int, int] | None:
-        """准备要摘要的旧前缀，但不修改状态；最近完整对话轮保留原文。"""
+        """摘要只覆盖完整旧任务；工具轮属于所在任务，不能被边界拆开。"""
 
         if keep_recent_turns < 1:
             raise ValueError("至少保留 1 个最近对话轮")
-        turn_starts = _complete_turn_starts(self._messages, self._summary_until)
-        if len(turn_starts) <= keep_recent_turns:
+        starts = _complete_turn_starts(self._messages)
+        if len(starts) <= keep_recent_turns:
             return None
-
-        cutoff = turn_starts[-keep_recent_turns]
-        source = self._api_view(end=cutoff)
-        compacted_messages = sum(
-            message.status is MessageStatus.COMPLETE and bool(message.content.strip())
-            for message in self._messages[self._summary_until : cutoff]
-        )
-        return source, cutoff, compacted_messages
+        cutoff = starts[-keep_recent_turns]
+        source = _to_api_messages(self._messages[:cutoff])
+        return source, cutoff, len(source)
 
     def apply_compaction(self, summary: str, cutoff: int) -> None:
-        """摘要校验成功后一次性移动边界；这是手动压缩唯一的写入点。"""
+        """完整摘要通过校验后一次替换旧前缀；失败前不修改消息。"""
 
-        clean_summary = summary.strip()
-        if not clean_summary:
+        if not summary.strip():
             raise ValueError("压缩摘要不能为空")
-        if not self._summary_until < cutoff < len(self._messages):
+        if not 0 < cutoff < len(self._messages):
             raise ValueError("压缩边界已经过期")
-        if cutoff not in _complete_turn_starts(self._messages, self._summary_until):
+        if cutoff not in _complete_turn_starts(self._messages):
             raise ValueError("压缩边界必须位于用户消息之前")
-        self._summary = clean_summary
-        self._summary_until = cutoff
-
-    def _api_view(self, *, end: int | None = None) -> list[APIMessage]:
-        """拼出“摘要确认对 + 边界后原文”，并保持 user/assistant 交替。"""
-
-        result: list[APIMessage] = []
-        if self._summary:
-            result.extend(
-                (
-                    APIMessage("user", _summary_reminder(self._summary)),
-                    APIMessage("assistant", "我已了解以上压缩摘要，将从这里继续。"),
-                )
-            )
-        for message in self._messages[self._summary_until : end]:
-            content = message.content.strip()
-            if message.status is not MessageStatus.COMPLETE or not content:
-                continue
-            if result and result[-1].role == message.role:
-                previous = result[-1]
-                assert isinstance(previous.content, str)
-                result[-1] = APIMessage(previous.role, f"{previous.content}\n\n{content}")
-            else:
-                result.append(APIMessage(message.role, content))
-
-        if not result:
-            raise ConversationError("对话中没有可发送的消息")
-        if result[0].role != "user":
-            raise ConversationError("对话必须从 user 开始")
-        return result
+        replacement = [
+            Message("user", _summary_reminder(summary.strip()), is_summary=True),
+            Message("assistant", "我已了解以上压缩摘要，将从这里继续。", is_summary=True),
+        ]
+        # 标签和确认消息也占空间；只比较摘要正文会放过“越压越长”的替换。
+        if message_characters(_to_api_messages(replacement)) >= message_characters(
+            _to_api_messages(self._messages[:cutoff])
+        ):
+            raise ValueError("摘要没有比原历史更短，本次压缩未应用")
+        self._messages[:cutoff] = replacement
 
 
-def _is_complete(message: Message, role: Role) -> bool:
-    """压缩边界只认完整且非空的普通聊天消息。"""
+def _to_api_messages(messages: Sequence[Message]) -> list[APIMessage]:
+    """相邻同角色文字可合并，工具消息保持原来的结构。"""
 
-    return (
-        message.role == role
-        and message.status is MessageStatus.COMPLETE
-        and bool(message.content.strip())
-    )
-
-
-def _complete_turn_starts(messages: Sequence[Message], start: int) -> list[int]:
-    """按真正发送给 API 的合并规则，找出每个完整 user→assistant 轮的起点。"""
-
-    groups: list[tuple[Role, int]] = []
-    for index in range(start, len(messages)):
-        message = messages[index]
-        if message.status is not MessageStatus.COMPLETE or not message.content.strip():
+    result: list[APIMessage] = []
+    for message in messages:
+        content = message.content.strip() if isinstance(message.content, str) else message.content
+        if message.status is not MessageStatus.COMPLETE or not content:
             continue
-        # 两条连续 user 在 API 视图里会合并为一条，因此轮次起点必须取第一条。
-        if not groups or groups[-1][0] != message.role:
-            groups.append((message.role, index))
-    return [
-        index
-        for position, (role, index) in enumerate(groups[:-1])
-        if role == "user" and groups[position + 1][0] == "assistant"
-    ]
+        if (
+            result
+            and result[-1].role == message.role
+            and isinstance(result[-1].content, str)
+            and isinstance(content, str)
+        ):
+            result[-1] = APIMessage(message.role, f"{result[-1].content}\n\n{content}")
+        else:
+            result.append(APIMessage(message.role, content))
+    if not result:
+        raise ConversationError("对话中没有可发送的消息")
+    if result[0].role != "user":
+        raise ConversationError("对话必须从 user 开始")
+    return result
+
+
+def _complete_turn_starts(messages: Sequence[Message]) -> list[int]:
+    """普通 user 开始任务，普通 assistant 完成任务；中途的工具块不另算轮次。"""
+
+    starts: list[int] = []
+    start: int | None = None
+    for index, message in enumerate(messages):
+        if (
+            message.is_summary
+            or message.status is not MessageStatus.COMPLETE
+            or not isinstance(message.content, str)
+            or not message.content.strip()
+        ):
+            continue
+        if message.role == "user":
+            if start is None:
+                start = index
+        elif start is not None:
+            starts.append(start)
+            start = None
+    return starts
 
 
 def _summary_reminder(summary: str) -> str:
@@ -246,3 +266,22 @@ def _summary_reminder(summary: str) -> str:
         f"<conversation-summary>\n{summary}\n</conversation-summary>\n"
         "</system-reminder>"
     )
+
+
+def message_characters(messages: Sequence[APIMessage]) -> int:
+    """估算即将发送的消息大小，包含文本、工具参数和工具结果。"""
+
+    total = 0
+    for message in messages:
+        total += len(message.role)
+        if isinstance(message.content, str):
+            total += len(message.content)
+            continue
+        for block in message.content:
+            if isinstance(block, APITextBlock):
+                total += len(block.text)
+            elif isinstance(block, APIToolUseBlock):
+                total += len(block.id) + len(block.name) + len(str(block.input))
+            elif isinstance(block, APIToolResultBlock):
+                total += len(block.tool_use_id) + len(block.content)
+    return total

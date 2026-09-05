@@ -16,9 +16,8 @@ from jixue.context import (
     AUTO_COMPACTION_TRIGGER_CHARACTERS,
     COMPACTION_SYSTEM_PROMPT,
     KEEP_RECENT_CONVERSATION_TURNS,
-    ActiveContext,
     ToolResultStore,
-    api_text_characters,
+    clear_old_tool_results,
     extract_compaction_summary,
     needs_auto_compaction,
     with_compaction_request,
@@ -171,18 +170,14 @@ class Agent:
         """接收 UI 的权限决定；ID 不匹配表示这个确认已经过期。"""
 
         future = self._permission_future
-        if (
-            future is None
-            or future.done()
-            or tool_use_id != self._permission_tool_use_id
-        ):
+        if future is None or future.done() or tool_use_id != self._permission_tool_use_id:
             return False
         future.set_result(allow)
         return True
 
     async def _stream_llm(
         self,
-        history: Sequence[APIMessage],
+        messages: Sequence[APIMessage],
         tool_definitions: Sequence[ToolDefinition],
         *,
         system_prompt: str | None = None,
@@ -190,7 +185,7 @@ class Agent:
         """同时等待模型事件和取消信号，取消时关闭正在等待的流。"""
 
         iterator = self._llm.stream(
-            history,
+            messages,
             tool_definitions,
             system=self._system_prompt if system_prompt is None else system_prompt,
         ).__aiter__()
@@ -247,10 +242,7 @@ class Agent:
                 mode.value,
                 permission_mode.value,
             )
-            full_history = _history_with_reminder(
-                self._conversation.to_api_format(),
-                reminder,
-            )
+            self._conversation.to_api_format()
         except ConversationError as error:
             yield _error_event("conversation_invalid", str(error))
             self._is_running = False
@@ -266,12 +258,8 @@ class Agent:
             consecutive_invalid_tools = 0
             cancelled = False
             pending_tool_calls: list[LLMStreamEvent] = []
-            # 当前任务的工具轮不进入 ConversationManager，重建压缩后的历史时要单独接回。
-            task_history: list[APIMessage] = []
             auto_compaction_attempted = False
             prompt_too_long_retried = False
-            # 这个对象只服务当前任务：保存哪些旧结果已经退出模型视图。
-            active_context = ActiveContext()
 
             # 一轮就是一次 LLM 请求。模型需要工具时，执行后把结果送回下一轮；
             # 模型不再请求工具时，说明它已经给出最终答复，循环自然结束。
@@ -285,20 +273,18 @@ class Agent:
                 tool_calls: list[LLMStreamEvent] = []
                 pending_tool_calls = []
 
-                # full_history 保存原文；active_history 只是本轮发给模型的临时副本。
-                active_history = active_context.build(full_history)
+                # 所有请求都从同一份会话读取，清理先于摘要预算检查。
+                messages = self._request_messages(reminder)
                 if (
                     not auto_compaction_attempted
                     and not self._auto_compaction_paused
                     and needs_auto_compaction(
-                        active_history,
+                        messages,
                         self._auto_compaction_trigger_characters,
                     )
                 ):
                     auto_compaction_attempted = True
-                    compacted, compact_cancelled, compact_usage = (
-                        await self._try_auto_compaction()
-                    )
+                    compacted, compact_cancelled, compact_usage = await self._try_auto_compaction()
                     if compact_usage != Usage():
                         yield _event(
                             AgentEventType.USAGE,
@@ -310,22 +296,13 @@ class Agent:
                         stop_reason = "cancelled"
                         break
                     if compacted:
-                        # 不能继续使用压缩前已经生成的 full_history；重新取摘要视图，
-                        # 再接回本任务已经完成的工具轮，最后重建 active_history。
-                        full_history = [
-                            *_history_with_reminder(
-                                self._conversation.to_api_format(),
-                                reminder,
-                            ),
-                            *task_history,
-                        ]
-                        active_history = active_context.build(full_history)
+                        messages = self._request_messages(reminder)
 
                 request_event_received = False
                 while True:
                     try:
                         async for llm_event in self._stream_llm(
-                            active_history,
+                            messages,
                             tool_definitions,
                         ):
                             request_event_received = True
@@ -379,9 +356,11 @@ class Agent:
 
                         prompt_too_long_retried = True
                         auto_compaction_attempted = True
-                        compacted, compact_cancelled, compact_usage = (
-                            await self._try_auto_compaction()
-                        )
+                        (
+                            compacted,
+                            compact_cancelled,
+                            compact_usage,
+                        ) = await self._try_auto_compaction()
                         if compact_usage != Usage():
                             yield _event(
                                 AgentEventType.USAGE,
@@ -395,15 +374,7 @@ class Agent:
                         if not compacted:
                             raise
 
-                        # 超长错误来自刚才那份旧请求；摘要成功后必须重建再重试。
-                        full_history = [
-                            *_history_with_reminder(
-                                self._conversation.to_api_format(),
-                                reminder,
-                            ),
-                            *task_history,
-                        ]
-                        active_history = active_context.build(full_history)
+                        messages = self._request_messages(reminder)
 
                 if self._cancel_event.is_set():
                     cancelled = True
@@ -494,9 +465,7 @@ class Agent:
 
                     if cancelled:
                         break
-                    completed = await self._execute_tool_batch(
-                        [call for _, call in ready_calls]
-                    )
+                    completed = await self._execute_tool_batch([call for _, call in ready_calls])
                     if completed is None:
                         cancelled = True
                         stop_reason = "cancelled"
@@ -574,12 +543,7 @@ class Agent:
                 if invalid_tool_limit_reached:
                     break
                 # 工具结果必须紧跟模型的 tool_use，并使用相同的 tool_use_id。
-                completed_tool_round = [
-                    APIMessage("assistant", tuple(response_blocks)),
-                    APIMessage("user", tuple(result_blocks)),
-                ]
-                task_history.extend(completed_tool_round)
-                full_history = [*full_history, *completed_tool_round]
+                self._conversation.add_tool_round(response_blocks, result_blocks)
 
             if reached_limit:
                 warning = f"\n\n> Agent 已执行 {self._max_iterations} 轮但仍未完成，已自动停止。"
@@ -612,9 +576,13 @@ class Agent:
                     usage=turn_usage,
                     status=MessageStatus.CANCELLED,
                 )
-            elif answer:
+            else:
+                # 过程文字已随工具轮保存，最终消息只写最后一次模型回复，避免重复。
+                final_text = "".join(
+                    block.text for block in response_blocks if isinstance(block, APITextBlock)
+                )
                 self._conversation.add_assistant(
-                    answer,
+                    final_text,
                     usage=turn_usage,
                     status=(
                         MessageStatus.FAILED
@@ -633,14 +601,20 @@ class Agent:
                 cancelled=cancelled,
             )
         except LLMClientError as error:
-            self._remember_failed(chunks)
+            self._remember_failed(chunks, turn_usage)
             yield _error_event(error.code, str(error), retryable=error.retryable)
         except Exception:
-            self._remember_failed(chunks)
+            self._remember_failed(chunks, turn_usage)
             yield _error_event("llm_internal_error", "模型客户端发生内部错误")
         finally:
             self._clear_permission()
             self._is_running = False
+
+    def _request_messages(self, reminder: str) -> list[APIMessage]:
+        """唯一请求入口：清理会话，再给当前问题附上本次动态提醒。"""
+
+        clear_old_tool_results(self._conversation)
+        return _messages_with_reminder(self._conversation.to_api_format(), reminder)
 
     async def _compact_context(self) -> AsyncIterator[AgentEvent]:
         """处理手动命令；真正的摘要事务也供自动压缩复用。"""
@@ -734,9 +708,7 @@ class Agent:
 
         compact_usage = Usage()
         try:
-            prepared = self._conversation.prepare_compaction(
-                KEEP_RECENT_CONVERSATION_TURNS
-            )
+            prepared = self._conversation.prepare_compaction(KEEP_RECENT_CONVERSATION_TURNS)
             if prepared is None:
                 return None
 
@@ -770,10 +742,8 @@ class Agent:
                 raise ValueError(f"摘要生成没有正常结束（{reason}），本次压缩未应用")
 
             summary = extract_compaction_summary("".join(raw_response))
-            if len(summary) >= api_text_characters(source):
-                raise ValueError("摘要没有比原历史更短，本次压缩未应用")
 
-            # 上面任何一步失败都不会到这里；这里是压缩状态唯一的提交点。
+            # 提交前还会检查含标签的实际大小；任何校验失败都保留旧消息。
             self._conversation.apply_compaction(summary, cutoff)
             # 手动压缩成功也可解除自动暂停，让后续任务重新获得预算保护。
             self._consecutive_auto_compaction_failures = 0
@@ -781,7 +751,7 @@ class Agent:
             return compacted_messages
         finally:
             # 摘要请求同样产生费用；无论成功与否，都计入状态栏的会话累计值。
-            self._conversation.record_system_usage(compact_usage)
+            self._conversation.record_usage(compact_usage)
 
     async def _try_auto_compaction(self) -> tuple[bool, bool, Usage]:
         """尝试一次自动摘要，并返回“成功、取消、用量”。"""
@@ -798,10 +768,7 @@ class Agent:
             cancelled = True
         except Exception:
             self._consecutive_auto_compaction_failures += 1
-            if (
-                self._consecutive_auto_compaction_failures
-                >= AUTO_COMPACTION_FAILURE_LIMIT
-            ):
+            if self._consecutive_auto_compaction_failures >= AUTO_COMPACTION_FAILURE_LIMIT:
                 self._auto_compaction_paused = True
 
         compact_usage = _subtract_usage(
@@ -825,11 +792,7 @@ class Agent:
 
         return _event(
             AgentEventType.LOOP_COMPLETE,
-            turn_index=(
-                _next_turn_index(self._conversation)
-                if turn_index is None
-                else turn_index
-            ),
+            turn_index=(_next_turn_index(self._conversation) if turn_index is None else turn_index),
             iterations=iterations,
             stop_reason=stop_reason,
             duration_ms=round((perf_counter() - started_at) * 1000),
@@ -928,23 +891,26 @@ class Agent:
         await asyncio.gather(cancel_wait, return_exceptions=True)
         return execution.result()
 
-    def _remember_failed(self, chunks: list[str]) -> None:
+    def _remember_failed(self, chunks: list[str], usage: Usage) -> None:
         """保留已经显示的半截回复，但标记失败，下一轮不会发给 LLM。"""
 
         if chunks:
             self._conversation.add_assistant(
                 "".join(chunks),
                 status=MessageStatus.FAILED,
+                usage=usage,
             )
+        else:
+            self._conversation.record_usage(usage)
 
 
-def _history_with_reminder(
-    history: Sequence[APIMessage],
+def _messages_with_reminder(
+    messages: Sequence[APIMessage],
     reminder: str,
 ) -> list[APIMessage]:
     """把客户端提醒附到当前问题副本，不污染真正保存的用户消息。"""
 
-    result = list(history)
+    result = list(messages)
     # 当前用户问题一定是最后一条字符串 user 消息；倒序查找可避开工具结果块。
     for index in range(len(result) - 1, -1, -1):
         message = result[index]
@@ -1051,10 +1017,7 @@ def _subtract_usage(current: Usage, previous: Usage) -> Usage:
 def _next_turn_index(conversation: ConversationManager) -> int:
     """管理命令不写入历史，但结束事件仍需要一个稳定的 UI 轮次编号。"""
 
-    return 1 + sum(
-        message.role == "assistant" and message.status is MessageStatus.COMPLETE
-        for message in conversation.messages
-    )
+    return conversation.completed_turns + 1
 
 
 def _usage(usage: Usage) -> dict[str, int]:
