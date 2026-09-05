@@ -207,7 +207,19 @@ def _translate_error(error: anthropic.APIError) -> LLMClientError:
         return LLMClientError(
             "model_or_endpoint_not_found", "模型或端点不存在", retryable=False
         )
+    if isinstance(error, anthropic.RequestTooLargeError):
+        return LLMClientError(
+            "prompt_too_long",
+            "发送给模型的上下文超过长度限制",
+            retryable=False,
+        )
     if isinstance(error, anthropic.BadRequestError):
+        if _is_prompt_too_long(error):
+            return LLMClientError(
+                "prompt_too_long",
+                "发送给模型的上下文超过长度限制",
+                retryable=False,
+            )
         return LLMClientError("invalid_model_request", "模型请求格式错误", retryable=False)
     if isinstance(error, anthropic.RateLimitError):
         return LLMClientError("rate_limited", "请求过多，请稍后重试", retryable=True)
@@ -218,3 +230,20 @@ def _translate_error(error: anthropic.APIError) -> LLMClientError:
     if isinstance(error, anthropic.APIStatusError) and error.status_code >= 500:
         return LLMClientError("provider_unavailable", "模型服务暂时不可用", retryable=True)
     return LLMClientError("provider_error", "模型服务返回未知错误", retryable=False)
+
+
+def _is_prompt_too_long(error: anthropic.BadRequestError) -> bool:
+    """兼容不同 Anthropic 协议端点对超长上下文的 400 错误文字。"""
+
+    details = f"{error} {error.body}".casefold()
+    markers = (
+        "prompt is too long",
+        "prompt too long",
+        "context length",
+        "context window",
+        "context limit",
+        "maximum context",
+        "too many tokens",
+        "token limit",
+    )
+    return any(marker in details for marker in markers)

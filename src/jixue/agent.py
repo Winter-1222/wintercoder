@@ -53,6 +53,8 @@ from jixue.tools import ToolContext, ToolRegistry, ToolResult
 
 # 模型连续三次请求不存在或已禁用的工具，通常说明它已经无法自行纠正。
 INVALID_TOOL_LIMIT = 3
+# 自动摘要连续失败时先暂停，避免每条消息都额外产生一次失败请求和费用。
+AUTO_COMPACTION_FAILURE_LIMIT = 3
 
 
 class AgentMode(StrEnum):
@@ -114,6 +116,8 @@ class Agent:
         self._system_prompt = build_system_prompt(self._tool_context.project_root)
         self._max_iterations = max_iterations
         self._auto_compaction_trigger_characters = auto_compaction_trigger_characters
+        self._consecutive_auto_compaction_failures = 0
+        self._auto_compaction_paused = False
         self._cancel_event = asyncio.Event()
         self._is_running = False
         self._mode = AgentMode.DO
@@ -265,6 +269,7 @@ class Agent:
             # 当前任务的工具轮不进入 ConversationManager，重建压缩后的历史时要单独接回。
             task_history: list[APIMessage] = []
             auto_compaction_attempted = False
+            prompt_too_long_retried = False
             # 这个对象只服务当前任务：保存哪些旧结果已经退出模型视图。
             active_context = ActiveContext()
 
@@ -284,29 +289,15 @@ class Agent:
                 active_history = active_context.build(full_history)
                 if (
                     not auto_compaction_attempted
+                    and not self._auto_compaction_paused
                     and needs_auto_compaction(
                         active_history,
                         self._auto_compaction_trigger_characters,
                     )
                 ):
                     auto_compaction_attempted = True
-                    usage_before = self._conversation.total_usage
-                    compacted_messages: int | None = None
-                    try:
-                        compacted_messages = (
-                            await self._apply_compaction_transaction()
-                        )
-                    except _CompactionCancelled:
-                        cancelled = True
-                        stop_reason = "cancelled"
-                    except Exception:
-                        # 自动摘要失败不能挡住原任务；保留旧视图继续发送。
-                        # prompt-too-long 重试和连续失败暂停会在后续小步补上。
-                        pass
-
-                    compact_usage = _subtract_usage(
-                        self._conversation.total_usage,
-                        usage_before,
+                    compacted, compact_cancelled, compact_usage = (
+                        await self._try_auto_compaction()
                     )
                     if compact_usage != Usage():
                         yield _event(
@@ -314,9 +305,11 @@ class Agent:
                             turn=_usage(compact_usage),
                             cumulative=_usage(self._conversation.total_usage),
                         )
-                    if cancelled:
+                    if compact_cancelled:
+                        cancelled = True
+                        stop_reason = "cancelled"
                         break
-                    if compacted_messages is not None:
+                    if compacted:
                         # 不能继续使用压缩前已经生成的 full_history；重新取摘要视图，
                         # 再接回本任务已经完成的工具轮，最后重建 active_history。
                         full_history = [
@@ -328,46 +321,89 @@ class Agent:
                         ]
                         active_history = active_context.build(full_history)
 
-                async for llm_event in self._stream_llm(active_history, tool_definitions):
-                    if llm_event.type == LLMEventType.TEXT:
-                        chunks.append(llm_event.text)
-                        _append_text(response_blocks, llm_event.text)
-                        yield _event(
-                            AgentEventType.STREAM_TEXT,
-                            text=llm_event.text,
-                            message_id=message_id,
+                request_event_received = False
+                while True:
+                    try:
+                        async for llm_event in self._stream_llm(
+                            active_history,
+                            tool_definitions,
+                        ):
+                            request_event_received = True
+                            if llm_event.type == LLMEventType.TEXT:
+                                chunks.append(llm_event.text)
+                                _append_text(response_blocks, llm_event.text)
+                                yield _event(
+                                    AgentEventType.STREAM_TEXT,
+                                    text=llm_event.text,
+                                    message_id=message_id,
+                                )
+                            elif llm_event.type == LLMEventType.TOOL_USE:
+                                tool_calls.append(llm_event)
+                                pending_tool_calls.append(llm_event)
+                                response_blocks.append(
+                                    APIToolUseBlock(
+                                        llm_event.tool_use_id,
+                                        llm_event.tool_name,
+                                        llm_event.tool_input,
+                                    )
+                                )
+                                payload: dict[str, object] = {
+                                    "id": llm_event.tool_use_id,
+                                    "name": llm_event.tool_name,
+                                    "input": dict(llm_event.tool_input),
+                                }
+                                if llm_event.tool_error:
+                                    payload["error"] = llm_event.tool_error
+                                yield AgentEvent(AgentEventType.TOOL_USE, payload)
+                            elif llm_event.type == LLMEventType.USAGE:
+                                turn_usage = _add_usage(turn_usage, llm_event.usage)
+                                cumulative = _add_usage(
+                                    self._conversation.total_usage,
+                                    turn_usage,
+                                )
+                                yield _event(
+                                    AgentEventType.USAGE,
+                                    turn=_usage(turn_usage),
+                                    cumulative=_usage(cumulative),
+                                )
+                            elif llm_event.type == LLMEventType.COMPLETE:
+                                stop_reason = llm_event.stop_reason or "end_turn"
+                        break
+                    except LLMClientError as error:
+                        if (
+                            error.code != "prompt_too_long"
+                            or prompt_too_long_retried
+                            or request_event_received
+                        ):
+                            raise
+
+                        prompt_too_long_retried = True
+                        auto_compaction_attempted = True
+                        compacted, compact_cancelled, compact_usage = (
+                            await self._try_auto_compaction()
                         )
-                    elif llm_event.type == LLMEventType.TOOL_USE:
-                        tool_calls.append(llm_event)
-                        pending_tool_calls.append(llm_event)
-                        response_blocks.append(
-                            APIToolUseBlock(
-                                llm_event.tool_use_id,
-                                llm_event.tool_name,
-                                llm_event.tool_input,
+                        if compact_usage != Usage():
+                            yield _event(
+                                AgentEventType.USAGE,
+                                turn=_usage(compact_usage),
+                                cumulative=_usage(self._conversation.total_usage),
                             )
-                        )
-                        payload: dict[str, object] = {
-                            "id": llm_event.tool_use_id,
-                            "name": llm_event.tool_name,
-                            "input": dict(llm_event.tool_input),
-                        }
-                        if llm_event.tool_error:
-                            payload["error"] = llm_event.tool_error
-                        yield AgentEvent(AgentEventType.TOOL_USE, payload)
-                    elif llm_event.type == LLMEventType.USAGE:
-                        turn_usage = _add_usage(turn_usage, llm_event.usage)
-                        cumulative = _add_usage(
-                            self._conversation.total_usage,
-                            turn_usage,
-                        )
-                        yield _event(
-                            AgentEventType.USAGE,
-                            turn=_usage(turn_usage),
-                            cumulative=_usage(cumulative),
-                        )
-                    elif llm_event.type == LLMEventType.COMPLETE:
-                        stop_reason = llm_event.stop_reason or "end_turn"
+                        if compact_cancelled:
+                            cancelled = True
+                            stop_reason = "cancelled"
+                            break
+                        if not compacted:
+                            raise
+
+                        # 超长错误来自刚才那份旧请求；摘要成功后必须重建再重试。
+                        full_history = [
+                            *_history_with_reminder(
+                                self._conversation.to_api_format(),
+                                reminder,
+                            ),
+                            *task_history,
+                        ]
+                        active_history = active_context.build(full_history)
 
                 if self._cancel_event.is_set():
                     cancelled = True
@@ -739,10 +775,40 @@ class Agent:
 
             # 上面任何一步失败都不会到这里；这里是压缩状态唯一的提交点。
             self._conversation.apply_compaction(summary, cutoff)
+            # 手动压缩成功也可解除自动暂停，让后续任务重新获得预算保护。
+            self._consecutive_auto_compaction_failures = 0
+            self._auto_compaction_paused = False
             return compacted_messages
         finally:
             # 摘要请求同样产生费用；无论成功与否，都计入状态栏的会话累计值。
             self._conversation.record_system_usage(compact_usage)
+
+    async def _try_auto_compaction(self) -> tuple[bool, bool, Usage]:
+        """尝试一次自动摘要，并返回“成功、取消、用量”。"""
+
+        if self._auto_compaction_paused:
+            return False, False, Usage()
+
+        usage_before = self._conversation.total_usage
+        compacted = False
+        cancelled = False
+        try:
+            compacted = await self._apply_compaction_transaction() is not None
+        except _CompactionCancelled:
+            cancelled = True
+        except Exception:
+            self._consecutive_auto_compaction_failures += 1
+            if (
+                self._consecutive_auto_compaction_failures
+                >= AUTO_COMPACTION_FAILURE_LIMIT
+            ):
+                self._auto_compaction_paused = True
+
+        compact_usage = _subtract_usage(
+            self._conversation.total_usage,
+            usage_before,
+        )
+        return compacted, cancelled, compact_usage
 
     def _loop_complete_event(
         self,

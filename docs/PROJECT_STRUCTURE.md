@@ -23,7 +23,7 @@ myAgent/
 
 | 文件 | 职责 |
 | --- | --- |
-| `src/jixue/agent.py` | Agent 核心：循环调用 LLM、生成活动视图；手动和自动压缩共用无工具摘要事务，成功后重建当前任务历史 |
+| `src/jixue/agent.py` | Agent 核心：循环调用 LLM、生成活动视图；共用摘要事务，处理预算触发、超长单次重试和连续失败暂停 |
 | `src/jixue/context.py` | 上下文保护：大结果落盘、旧工具结果活动视图、活动历史字符预算，以及摘要提示词与校验 |
 | `src/jixue/prompt.py` | 生成稳定的七段式 System Prompt，以及每轮动态的任务模式、权限模式、时间和 Git 提醒 |
 | `src/jixue/permission.py` | 权限判断核心：危险命令、路径沙箱、精确安全规则、三种权限模式和 ALLOW/DENY/ASK 结果 |
@@ -32,7 +32,7 @@ myAgent/
 | `src/jixue/llm/base.py` | 霁雪自己的 LLM 接口；统一接收 system、messages、tools 并输出流事件 |
 | `src/jixue/llm/fake.py` | 离线模拟 LLM；支持工具闭环、权限测试和 `/compact` 摘要测试 |
 | `src/jixue/llm/config.py` | 从 `models.yaml` 和环境中生成四字段配置 |
-| `src/jixue/llm/adapters/anthropic_client.py` | 唯一接触 Anthropic SDK，翻译流事件；无工具摘要请求会省略整个 `tools` 字段 |
+| `src/jixue/llm/adapters/anthropic_client.py` | 唯一接触 Anthropic SDK，翻译流事件；省略空 `tools`，并把供应商超长错误映射为稳定领域错误码 |
 | `src/jixue/mcp/client.py` | MCP transport 合同、stdio/HTTP 连接、`.env` URL 占位替换、握手、工具发现、限时调用；MCP SDK 只在这里出现 |
 | `src/jixue/mcp/tool.py` | 把 MCP 工具定义和调用结果包装成霁雪统一的 Tool/ToolResult |
 | `src/jixue/mcp/__init__.py` | MCP 客户端层公开导入入口 |
