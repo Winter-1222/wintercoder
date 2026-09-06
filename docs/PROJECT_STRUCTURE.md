@@ -7,6 +7,7 @@
 ```text
 myAgent/
 ├─ apps/desktop/       Electron + React 桌面端
+├─ assert/             README 使用的项目演示截图
 ├─ config/             模型、MCP 和 Markdown 子角色配置
 ├─ docs/               路线、目录说明和每章唯一的 README
 ├─ scripts/            本地检查脚本
@@ -94,6 +95,9 @@ myAgent/
 
 | 文件 | 职责 |
 | --- | --- |
+| `README.md` | 项目展示首页：界面截图、核心设计、快速启动与章节导航 |
+| `assert/memoryExample.png` | 项目记忆使用与桌面聊天界面截图 |
+| `assert/subAgent.png` | 子任务卡片、续接与结果汇总截图 |
 | `config/agents/reviewer.md` | 可直接使用的只读审查角色示例；YAML 元信息、Markdown 行为说明 |
 | `config/models.yaml` | 三个模型的短名称和真实模型 ID |
 | `config/mcp.json` | 可提交的 MCP Server 公共配置，目前为空 |
