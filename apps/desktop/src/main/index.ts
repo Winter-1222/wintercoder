@@ -3,7 +3,7 @@
 import { app, BrowserWindow, ipcMain } from 'electron'
 import { join, resolve } from 'node:path'
 
-import type { AgentMode, PermissionMode } from '../shared/protocol'
+import type { AgentMode, PermissionMode, SessionAction } from '../shared/protocol'
 import { PythonBridge } from './bridge-process'
 
 let mainWindow: BrowserWindow | null = null
@@ -49,6 +49,18 @@ function send(channel: string, value: unknown): void {
 }
 
 function registerIpc(): void {
+  ipcMain.handle('jixue:session', (event, action: unknown, sessionId: unknown) => {
+    if (!validSender(event)) throw new Error('拒绝未知窗口')
+    if (typeof action !== 'string' || !['current', 'new', 'switch', 'list'].includes(action)) {
+      throw new Error('会话操作无效')
+    }
+    if (sessionId !== undefined &&
+        (typeof sessionId !== 'string' || !/^[0-9a-f]{32}$/.test(sessionId))) {
+      throw new Error('会话编号无效')
+    }
+    if (!bridge) throw new Error('Bridge 未创建')
+    bridge.session(action as SessionAction, sessionId as string | undefined)
+  })
   ipcMain.handle('jixue:get-bridge-state', (event) => {
     if (!validSender(event)) throw new Error('拒绝未知窗口')
     return bridge?.getState() ?? {

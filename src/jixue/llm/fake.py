@@ -65,6 +65,24 @@ class FakeLLMClient:
 
         # 仅供离线端到端测试：/write 路径 内容 会请求真实 write_file，
         # 后续仍要经过与真实模型完全相同的权限确认和工具执行链路。
+        # 记忆命令仅用于 Fake 离线手测，真实模型使用自然语言决定工具参数。
+        memory_command = latest_user_text.split(" ", 2)
+        if not is_compaction and memory_command[0] in {"/memory", "/remember", "/forget"}:
+            name = "read_memory" if memory_command[0] == "/memory" else "update_memory"
+            memory_input: dict[str, object] = {}
+            if name == "update_memory":
+                memory_input = {"action": memory_command[0][1:],
+                                "key": memory_command[1] if len(memory_command) > 1 else "",
+                                "content": memory_command[2] if len(memory_command) > 2 else ""}
+            if any(tool.get("name") == name for tool in tools):
+                usage = Usage(max(1, history_characters // 4), 8)
+                yield LLMStreamEvent(LLMEventType.TOOL_USE,
+                                     tool_use_id=f"fake_memory_{uuid4().hex}",
+                                     tool_name=name, tool_input=memory_input)
+                yield LLMStreamEvent(LLMEventType.USAGE, usage=usage)
+                yield LLMStreamEvent(LLMEventType.COMPLETE, usage=usage, stop_reason="tool_use")
+                return
+
         if not is_compaction and latest_user_text.startswith("/write "):
             path, separator, content = latest_user_text.removeprefix("/write ").partition(" ")
             has_write_file = any(tool.get("name") == "write_file" for tool in tools)

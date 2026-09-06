@@ -41,6 +41,10 @@ class ModelStream:
         self._control = control
         self._system_prompt = system_prompt
 
+    def set_system_prompt(self, prompt: str) -> None:
+        """只在新任务开始时刷新，工具循环内保持同一前缀。"""
+        self._system_prompt = prompt
+
     @property
     def model_name(self) -> str:
         return self._llm.model_name

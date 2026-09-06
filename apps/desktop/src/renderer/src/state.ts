@@ -39,6 +39,8 @@ export interface ChatState {
 }
 
 export type ChatAction =
+  | { type: 'session_reset' }
+  | { type: 'session_restored'; inputTokens: number; outputTokens: number }
   | { type: 'bridge_changed'; state: BridgeState }
   | { type: 'model_changed'; model: string }
   | { type: 'mode_changed'; mode: AgentMode }
@@ -139,6 +141,22 @@ function updateAssistant(
 
 export function chatReducer(state: ChatState, action: ChatAction): ChatState {
   switch (action.type) {
+    case 'session_reset':
+      return { ...initialChatState, bridge: state.bridge, model: state.model }
+    case 'session_restored':
+      // 回放只恢复显示；任何旧确认都不能再次变成可点击的权限请求。
+      return {
+        ...state,
+        activeRequestId: null,
+        isCancelling: false,
+        startedAt: null,
+        usage: { inputTokens: action.inputTokens, outputTokens: action.outputTokens },
+        messages: state.messages.map((message) => ({
+          ...message,
+          status: message.status === 'streaming' ? 'cancelled' : message.status,
+          permissionStatus: message.permissionStatus ? 'expired' : undefined
+        }))
+      }
     case 'bridge_changed':
       // Python 进程的启动、在线或错误状态变化时，只替换 Bridge 状态。
       return { ...state, bridge: action.state }

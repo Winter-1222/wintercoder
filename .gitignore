@@ -31,9 +31,9 @@ config/*.local.*
 
 # 霁雪运行数据
 .jixue/
-sessions/
-memories/
-tool-results/
+/sessions/
+/memories/
+/tool-results/
 
 # 编辑器与系统文件
 .idea/

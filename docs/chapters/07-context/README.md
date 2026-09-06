@@ -83,7 +83,7 @@ conda run --no-capture-output -n mycoder mypy src
 
 **压缩后为什么旧聊天还在？** 页面保存事件产生的展示记录；后端工作消息已经被替换。后端不再另存一套完整原文。
 
-**能否重启恢复？** 不能。[Claude Code 会保存 JSONL 会话](https://code.claude.com/docs/en/how-claude-code-works#work-with-sessions)，霁雪的会话持久化仍留在第八章。本次没有提前实现存档或长期记忆。
+**能否重启恢复？** 可以。第八章已接入 JSONL 持久化：界面恢复显示记录，模型恢复压缩后的最新工作消息快照；详见[第八章](../08-memory/README.md)。
 
 **清理后还能拿到工具原文吗？** 有 artifact 的结果可用 `read_artifact` 找回；普通小结果需要重新调用原工具。清理只改正文，不删除 `tool_use` 或 `tool_result`。读取 artifact 单次默认 8,000 字符，最多 20,000，优先使用 search 定位。
 

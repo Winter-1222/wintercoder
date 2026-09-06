@@ -11,7 +11,8 @@ import {
   type BridgeEnvelope,
   type BridgeState,
   type McpServerState,
-  type PermissionMode
+  type PermissionMode,
+  type SessionAction
 } from '../shared/protocol'
 
 const MAX_BUFFER = 1024 * 1024
@@ -88,6 +89,11 @@ export class PythonBridge {
         this.stopping ? 'Python Bridge 已关闭' : `Python Bridge 意外退出（${code ?? '未知'}）`
       )
     })
+  }
+
+  session(action: SessionAction, sessionId?: string): void {
+    if (this.state.status !== 'ready') throw new Error('Python Bridge 尚未就绪')
+    this.write(`session.${action}`, 'session_' + randomUUID(), { session_id: sessionId ?? '' })
   }
 
   sendChat(requestId: string, text: string): void {

@@ -12,7 +12,7 @@ myAgent/
 ├─ scripts/            本地检查脚本
 ├─ src/jixue/          Python 后端核心（agent.py 组装，agent_runtime/ 执行）
 ├─ tests/              本地测试，Git 忽略
-├─ .jixue/             工具大结果等运行数据，Git 忽略
+├─ .jixue/             会话、项目记忆和工具大结果等运行数据，Git 忽略
 ├─ .env                本地密钥，Git 忽略
 ├─ .env.example        不含密钥的配置示例
 ├─ pyproject.toml      Python 项目和检查工具配置
@@ -32,7 +32,12 @@ myAgent/
 | `src/jixue/agent_runtime/control.py` | 运行状态、Plan/Do、权限模式、统一取消信号及一次性权限回复 |
 | `src/jixue/agent_runtime/events.py` | Agent 事件合同与公共事件构造，不持有会话或执行组件 |
 | `src/jixue/context.py` | 三层上下文策略：大结果落盘、成轮清理旧工具正文、摘要触发与资料文字转换；无独立活动状态 |
-| `src/jixue/prompt.py` | 生成稳定的七段式 System Prompt，以及每轮动态的任务模式、权限模式、时间和 Git 提醒 |
+| `src/jixue/prompt.py` | 拼装基础 System Prompt、项目指令和记忆，以及每轮模式、时间和 Git 动态提醒 |
+| `src/jixue/project_context.py` | 有界读取根目录 AGENTS.md，拒绝指向项目外的路径 |
+| `src/jixue/memory.py` | 有界 Markdown 项目记忆、按 key 更新/忘记、校验后原子替换 |
+| `src/jixue/sessions/__init__.py` | 会话持久化包 |
+| `src/jixue/sessions/codec.py` | 工作消息、工具块、摘要、用量及累计任务数的快照编解码 |
+| `src/jixue/sessions/store.py` | JSONL 追加、最新快照恢复、UI 回放记录、半条尾部处理及会话列表 |
 | `src/jixue/permission.py` | 权限判断核心：危险命令、路径沙箱、精确安全规则、三种权限模式和 ALLOW/DENY/ASK 结果 |
 | `src/jixue/domain/conversation.py` | 唯一工作消息序列，包含文字、工具块和摘要；负责协议转换、大小估算、原子替换及独立用量和轮次计数 |
 | `src/jixue/domain/events.py` | Electron 与 Python 之间的一行 JSON 信封 |
@@ -44,7 +49,8 @@ myAgent/
 | `src/jixue/mcp/tool.py` | 把 MCP 工具定义和调用结果包装成霁雪统一的 Tool/ToolResult |
 | `src/jixue/mcp/__init__.py` | MCP 客户端层公开导入入口 |
 | `src/jixue/bridge/bootstrap.py` | 读取项目根目录 `.env`，选择 Fake 或真实 LLM |
-| `src/jixue/bridge/application.py` | 转发任务模式、权限模式、聊天、取消和权限回复，并为 Agent 事件包装信封 |
+| `src/jixue/bridge/application.py` | 命令互斥、会话命令、聊天事件转发和任务开始/结束存盘 |
+| `src/jixue/bridge/sessions.py` | 新建/切换/恢复会话并重新组装 Agent；共享工具注册表 |
 | `src/jixue/bridge/server.py` | 从 stdin 收 JSON、从 stdout 发 JSON；注册内置工具（含 `read_artifact`），并在后台连接和重试 MCP Server |
 | `src/jixue/bridge/__main__.py` | 让 `python -m jixue.bridge` 能启动 |
 | `src/jixue/tools/base.py` | 工具合同、ToolResult 和通用 BaseTool |
@@ -55,6 +61,7 @@ myAgent/
 | `src/jixue/tools/grep.py` | 在项目文本文件中搜索字面内容并返回行号，跳过密钥和 `.jixue` |
 | `src/jixue/tools/write_tools.py` | write_file 整体写入文件；edit_file 只替换唯一匹配的文字 |
 | `src/jixue/tools/bash.py` | 在项目根目录执行 PowerShell/Bash，限制时长并移除常见密钥环境变量；完整输出交给统一的上下文保护 |
+| `src/jixue/tools/memory.py` | read_memory 只读查询、update_memory 记住/忘记；沿用工具校验、模式和权限链 |
 | `src/jixue/tools/__init__.py` | 工具层公开导入入口 |
 
 `agent.py` 是最先阅读的组装图，接着读 `agent_runtime/loop.py` 的 `run()` 看完整任务链；`domain` 不知道 Electron 和 Anthropic；`adapters` 藏住外部 SDK；`bridge` 只负责连接桌面端。
@@ -67,8 +74,8 @@ myAgent/
 | `apps/desktop/src/main/bridge-process.ts` | 启动 Conda 子进程，处理 NDJSON，并缓存 Bridge 与每个 MCP Server 的状态 |
 | `apps/desktop/src/preload/index.ts` | 只向网页暴露白名单中的聊天、取消、模式、确认和订阅接口 |
 | `apps/desktop/src/shared/protocol.ts` | 前后端共用的事件信封、桌面 API、BridgeState 和 MCP 状态类型 |
-| `apps/desktop/src/renderer/src/App.tsx` | 聊天页面：展示模式、权限、工具、确认操作和 MCP Server 连接状态 |
-| `apps/desktop/src/renderer/src/state.ts` | reducer：更新任务模式、权限模式、工具卡片、轮次、停止和完成状态 |
+| `apps/desktop/src/renderer/src/App.tsx` | 聊天页面：会话侧栏与回放、模式、权限、工具确认和 MCP 状态 |
+| `apps/desktop/src/renderer/src/state.ts` | reducer：更新任务模式、权限模式、工具卡片、轮次、停止和完成状态；恢复会话时让旧确认失效 |
 | `apps/desktop/src/renderer/src/styles.css` | Codex 风格的聊天、工具、权限卡片、MCP 状态和输入区样式 |
 | `apps/desktop/src/renderer/src/main.tsx` | React 页面入口 |
 
@@ -90,6 +97,7 @@ myAgent/
 | `docs/chapters/05-permissions/README.md` | 第五章权限防线、判断链路和分步进度 |
 | `docs/chapters/06-mcp/README.md` | 第六章 MCP 连接、工具包装、完整调用链和手测说明 |
 | `docs/chapters/07-context/README.md` | 第七章统一 messages、三层上下文保护、Claude Code 公开机制对照及启动和测试说明 |
+| `docs/chapters/08-memory/README.md` | 会话恢复/切换、项目指令、记忆工具、全链路核心代码和手测 |
 | `scripts/test-all.ps1` | 顺序执行本地自动化检查 |
 
 本地 `tests/mcp/demo_server.py` 和 `demo_http_server.py` 分别模拟 stdio 与 HTTP
@@ -99,3 +107,5 @@ Server；对应测试覆盖两条真实闭环。每章目录只允许有一个 `
 打印 URL 或 Key。
 
 `.jixue/tool-results/` 由程序运行时自动创建。里面保存工具完整大结果，界面和模型只接收预览；该目录不属于源码，也不会提交到 Git。
+
+`.jixue/sessions/<id>.jsonl` 保存界面事件和工作消息快照，`current.txt` 保存当前会话编号。`.jixue/memory/MEMORY.md` 保存项目共享记忆；它们都属于本地运行数据，不进入 Git。第八章本地专项桌面测试为 `tests/ui/ch08_electron.mjs`。

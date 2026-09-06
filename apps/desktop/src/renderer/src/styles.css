@@ -435,3 +435,13 @@ button, textarea { font: inherit; }
   .permission-panel { align-items: stretch; flex-direction: column; gap: 10px; }
   .permission-actions { justify-content: flex-end; }
 }
+
+/* 会话列表有独立滚动区，长标题不会挤出工作区。 */
+.session-list { display: grid; gap: 4px; max-height: 34vh; overflow-y: auto; }
+.session-list button, .new-session { text-align: left; border: 0; padding: 10px 12px;
+  border-radius: 8px; cursor: pointer; background: transparent; color: inherit;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-list .current-chat { background: #e9e9e9; font-weight: 600; }
+.session-list button:disabled, .new-session:disabled { opacity: .5; cursor: default; }
+.new-session { border: 1px solid #ddd; margin-bottom: 8px; }
+.session-error { color: #a33535; font-size: 12px; overflow-wrap: anywhere; }

@@ -8,7 +8,9 @@ import type {
   AgentMode,
   BridgeEnvelope,
   McpServerStatus,
-  PermissionMode
+  PermissionMode,
+  SessionAction,
+  SessionInfo
 } from '../../shared/protocol'
 import { chatReducer, initialChatState, type UiMessage } from './state'
 
@@ -147,6 +149,10 @@ function object(value: unknown): Record<string, unknown> {
 export default function App(): React.JSX.Element {
   const [state, dispatch] = useReducer(chatReducer, initialChatState)
   const [input, setInput] = useState('')
+  const [sessions, setSessions] = useState<SessionInfo[]>([])
+  const [sessionId, setSessionId] = useState<string | null>(null)
+  const [sessionLoading, setSessionLoading] = useState(true)
+  const [sessionError, setSessionError] = useState('')
   const [clock, setClock] = useState(Date.now())
   const endRef = useRef<HTMLDivElement>(null)
 
@@ -165,6 +171,10 @@ export default function App(): React.JSX.Element {
   }, [])
 
   useEffect(() => {
+    if (state.bridge.status === 'ready') void changeSession('current')
+  }, [state.bridge.status])
+
+  useEffect(() => {
     if (!state.activeRequestId) return
     const timer = window.setInterval(() => setClock(Date.now()), 100)
     return () => window.clearInterval(timer)
@@ -175,7 +185,32 @@ export default function App(): React.JSX.Element {
   }, [state.messages])
 
   function handleEvent(event: BridgeEnvelope): void {
-    if (event.type === 'bridge.ready') {
+    if (event.type === 'session.reset') {
+      dispatch({ type: 'session_reset' })
+      setSessionLoading(true)
+    } else if (event.type === 'session.turn') {
+      dispatch({ type: 'request_started', requestId: event.request_id,
+        text: text(event.payload.text), startedAt: 0 })
+    } else if (event.type === 'session.loaded' || event.type === 'session.list') {
+      const items = Array.isArray(event.payload.sessions) ? event.payload.sessions : []
+      setSessions(items.map((item) => ({ id: text(object(item).id), title: text(object(item).title) })))
+      setSessionId(text(event.payload.session_id))
+      if (event.type === 'session.loaded') {
+        dispatch({ type: 'session_restored', inputTokens: number(event.payload.input_tokens),
+          outputTokens: number(event.payload.output_tokens) })
+        dispatch({ type: 'model_changed', model: text(event.payload.model) })
+        const mode = event.payload.mode
+        if (mode === 'plan' || mode === 'do') dispatch({ type: 'mode_changed', mode })
+        const permission = event.payload.permission_mode
+        if (permission === 'confirm_edits' || permission === 'ask_all' || permission === 'auto_allow') {
+          dispatch({ type: 'permission_mode_changed', mode: permission })
+        }
+        setSessionLoading(false)
+      }
+    } else if (event.type === 'error' && event.payload.scope === 'session') {
+      setSessionError(text(event.payload.message))
+      setSessionLoading(false)
+    } else if (event.type === 'bridge.ready') {
       dispatch({ type: 'model_changed', model: text(event.payload.model, 'fake-jixue') })
       const mode = text(event.payload.mode)
       if (mode === 'plan' || mode === 'do') dispatch({ type: 'mode_changed', mode })
@@ -260,6 +295,7 @@ export default function App(): React.JSX.Element {
         cancelled: event.payload.cancelled === true
       })
     } else if (event.type === 'error') {
+      if (event.payload.scope === 'storage') setSessionError(text(event.payload.message))
       dispatch({
         type: 'request_failed',
         requestId: event.request_id,
@@ -269,11 +305,24 @@ export default function App(): React.JSX.Element {
   }
 
   const canSend =
-    state.bridge.status === 'ready' && !state.activeRequestId && input.trim().length > 0
+    state.bridge.status === 'ready' && !!sessionId && !sessionLoading &&
+    !state.activeRequestId && input.trim().length > 0
   const elapsed = state.startedAt ? (clock - state.startedAt) / 1000 : state.durationMs / 1000
   const connectedMcpCount = state.bridge.mcpServers.filter(
     (server) => server.status === 'connected'
   ).length
+
+  async function changeSession(action: SessionAction, targetId?: string): Promise<void> {
+    setSessionLoading(true)
+    setSessionError('')
+    try {
+      await window.jixue.session(action, targetId)
+      setInput('')
+    } catch (error) {
+      setSessionLoading(false)
+      setSessionError(error instanceof Error ? error.message : String(error))
+    }
+  }
 
   async function sendMessage(): Promise<void> {
     const message = input.trim()
@@ -349,7 +398,21 @@ export default function App(): React.JSX.Element {
         <p className="sidebar-label">工作区</p>
         <div className="project"><strong>myAgent</strong><small>本地项目</small></div>
         <p className="sidebar-label">对话</p>
-        <div className="current-chat">开始构建霁雪</div>
+        <button className="new-session" onClick={() => void changeSession('new')}
+          disabled={!!state.activeRequestId || sessionLoading || state.bridge.status !== 'ready'}>
+          ＋ 新建会话
+        </button>
+        <nav className="session-list" aria-label="会话列表">
+          {sessions.map((session) => (
+            <button key={session.id} className={session.id === sessionId ? 'current-chat' : ''}
+              disabled={!!state.activeRequestId || sessionLoading}
+              onClick={() => void changeSession('switch', session.id)} title={session.title}>
+              {session.title}
+            </button>
+          ))}
+        </nav>
+        {sessionLoading && <small role="status">正在恢复会话…</small>}
+        {sessionError && <p className="session-error" role="alert">{sessionError}</p>}
         <div className="bridge-state" data-status={state.bridge.status}>
           <span className="status-dot" />
           <div><strong>Python Bridge</strong><small>{state.bridge.detail}</small></div>
@@ -380,7 +443,7 @@ export default function App(): React.JSX.Element {
 
       <section className="workspace">
         <header className="titlebar">
-          <span>myAgent / <strong>开始构建霁雪</strong></span>
+          <span>myAgent / <strong>{sessions.find((session) => session.id === sessionId)?.title ?? '新会话'}</strong></span>
           <span>{state.model}</span>
         </header>
 
@@ -419,7 +482,7 @@ export default function App(): React.JSX.Element {
                 }
               }}
               placeholder={state.bridge.status === 'ready' ? '给霁雪一个任务…' : '正在连接…'}
-              disabled={state.bridge.status !== 'ready'}
+              disabled={state.bridge.status !== 'ready' || sessionLoading || !sessionId}
               rows={2}
             />
             <div className="composer-toolbar">
@@ -428,7 +491,7 @@ export default function App(): React.JSX.Element {
                   <button
                     className={state.mode === 'plan' ? 'active' : ''}
                     onClick={() => void changeMode('plan')}
-                    disabled={!!state.activeRequestId}
+                    disabled={!!state.activeRequestId || sessionLoading}
                     title="只调查并制定计划，不修改文件"
                   >
                     Plan
@@ -436,7 +499,7 @@ export default function App(): React.JSX.Element {
                   <button
                     className={state.mode === 'do' ? 'active' : ''}
                     onClick={() => void changeMode('do')}
-                    disabled={!!state.activeRequestId}
+                    disabled={!!state.activeRequestId || sessionLoading}
                     title="允许 Agent 使用全部已启用工具"
                   >
                     Do
@@ -447,7 +510,7 @@ export default function App(): React.JSX.Element {
                   id="permission-mode"
                   className="permission-mode-select"
                   value={state.permissionMode}
-                  disabled={!!state.activeRequestId}
+                  disabled={!!state.activeRequestId || sessionLoading}
                   title="决定哪些工具需要你确认；硬拦截和路径沙箱始终生效"
                   onChange={(event) =>
                     void changePermissionMode(event.target.value as PermissionMode)

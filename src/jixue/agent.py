@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -43,6 +44,7 @@ class Agent:
         tools = tools or ToolRegistry()
         tool_context = tool_context or ToolContext(Path.cwd().resolve())
 
+        self._project_root = tool_context.project_root
         self._conversation = conversation
         self._control = RunControl()
         self._model = ModelStream(
@@ -102,6 +104,9 @@ class Agent:
             return
         self._control.begin()
         try:
+            self._model.set_system_prompt(
+                await asyncio.to_thread(build_system_prompt, self._project_root)
+            )
             stream = self._compactor.run_manual() if text == "/compact" else self._loop.run(text)
             async for item in stream:
                 yield item

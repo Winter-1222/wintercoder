@@ -86,13 +86,19 @@ class ConversationError(ValueError):
 class ConversationManager:
     """只保存一份工作消息；清理和摘要直接更新它，不维护平行历史。"""
 
-    def __init__(self, messages: Sequence[Message] | None = None) -> None:
+    def __init__(
+        self, messages: Sequence[Message] | None = None, *,
+        total_usage: Usage | None = None, completed_turns: int | None = None,
+    ) -> None:
         self._messages = list(messages or [])
-        self._usage = Usage(
+        self._usage = total_usage or Usage(
             sum(message.usage.input_tokens for message in self._messages),
             sum(message.usage.output_tokens for message in self._messages),
         )
-        self.completed_turns = len(_complete_turn_starts(self._messages))
+        self.completed_turns = (
+            completed_turns if completed_turns is not None
+            else len(_complete_turn_starts(self._messages))
+        )
 
     @property
     def messages(self) -> tuple[Message, ...]:

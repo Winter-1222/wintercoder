@@ -9,13 +9,13 @@ from contextlib import suppress
 from pathlib import Path
 from typing import TextIO
 
-from jixue.agent import Agent
 from jixue.bridge.application import BridgeApplication
 from jixue.bridge.bootstrap import (
     BridgeBootstrapError,
     create_runtime_llm,
     load_project_environment,
 )
+from jixue.bridge.sessions import SessionController
 from jixue.domain.events import Envelope, ProtocolError
 from jixue.llm.base import LLMClient
 from jixue.mcp import (
@@ -34,6 +34,8 @@ from jixue.tools import (
     create_grep_tool,
     create_read_artifact_tool,
     create_read_file_tool,
+    create_read_memory_tool,
+    create_update_memory_tool,
     create_write_file_tool,
 )
 
@@ -124,6 +126,8 @@ def main() -> None:
     tools.register(create_write_file_tool())
     tools.register(create_edit_file_tool())
     tools.register(create_bash_tool())
+    tools.register(create_read_memory_tool())
+    tools.register(create_update_memory_tool())
     try:
         llm = create_runtime_llm(project_root)
         asyncio.run(_run_bridge(llm, tools, project_root))
@@ -140,9 +144,9 @@ async def _run_bridge(
     """立即启动 Agent，同时在后台连接 MCP Server。"""
 
     clients: list[MCPTransport] = []
-    agent = Agent(llm, tools=tools)
+    sessions = await asyncio.to_thread(SessionController, llm, tools, project_root)
     server = BridgeServer(
-        BridgeApplication(agent),
+        BridgeApplication(sessions.agent, sessions),
         sys.stdin,
         sys.stdout,
         sys.stderr,

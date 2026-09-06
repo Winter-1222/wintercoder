@@ -29,7 +29,15 @@ export interface BridgeEnvelope {
   payload: Record<string, unknown>
 }
 
+export type SessionAction = 'current' | 'new' | 'switch' | 'list'
+
+export interface SessionInfo {
+  id: string
+  title: string
+}
+
 export interface JixueDesktopApi {
+  session: (action: SessionAction, sessionId?: string) => Promise<void>
   sendChat: (requestId: string, text: string) => Promise<void>
   cancelChat: (requestId: string) => Promise<void>
   respondPermission: (requestId: string, toolUseId: string, allow: boolean) => Promise<void>
