@@ -1,6 +1,6 @@
 /** React 聊天状态；reducer 只做“旧状态 + 事件 = 新状态”。 */
 
-import type { AgentMode, BridgeState, PermissionMode } from '../../shared/protocol'
+import type { AgentMode, BridgeState, PermissionMode, SubagentTaskInfo } from '../../shared/protocol'
 
 export type PermissionStatus =
   | 'pending'
@@ -26,6 +26,7 @@ export interface UiMessage {
 
 export interface ChatState {
   bridge: BridgeState
+  subagents: SubagentTaskInfo[]
   messages: UiMessage[]
   activeRequestId: string | null
   isCancelling: boolean
@@ -39,6 +40,8 @@ export interface ChatState {
 }
 
 export type ChatAction =
+  | { type: 'subagent_updated'; task: SubagentTaskInfo }
+  | { type: 'subagents_loaded'; tasks: SubagentTaskInfo[] }
   | { type: 'session_reset' }
   | { type: 'session_restored'; inputTokens: number; outputTokens: number }
   | { type: 'bridge_changed'; state: BridgeState }
@@ -104,6 +107,7 @@ export const initialChatState: ChatState = {
     detail: '正在连接 Python Bridge',
     mcpServers: []
   },
+  subagents: [],
   messages: [],
   activeRequestId: null,
   isCancelling: false,
@@ -141,6 +145,12 @@ function updateAssistant(
 
 export function chatReducer(state: ChatState, action: ChatAction): ChatState {
   switch (action.type) {
+    case 'subagent_updated':
+      // 独立快照覆盖；子任务结束不能结束主聊天，也不能重复累计 Token。
+      return { ...state, subagents: [...state.subagents.filter(
+        (task) => task.agent_id !== action.task.agent_id), action.task] }
+    case 'subagents_loaded':
+      return { ...state, subagents: action.tasks }
     case 'session_reset':
       return { ...initialChatState, bridge: state.bridge, model: state.model }
     case 'session_restored':

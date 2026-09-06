@@ -58,7 +58,11 @@ class AgentLoop:
         project_root: Path,
         max_iterations: int,
         auto_compaction_trigger_characters: int,
+        reminder_override: str | None = None,
+        tool_definitions: Sequence[ToolDefinition] | None = None,
     ) -> None:
+        self._reminder_override = reminder_override
+        self._tool_definitions = tool_definitions
         self._conversation = conversation
         self._model = model
         self._executor = executor
@@ -83,13 +87,19 @@ class AgentLoop:
         consecutive_invalid = 0
         self._conversation.add_user(text)
         try:
-            reminder = await asyncio.to_thread(
-                build_system_reminder,
-                self._project_root,
-                self._control.mode.value,
-                self._control.permission_mode.value,
+            reminder = self._reminder_override
+            if reminder is None:
+                reminder = await asyncio.to_thread(
+                    build_system_reminder,
+                    self._project_root,
+                    self._control.mode.value,
+                    self._control.permission_mode.value,
+                )
+            tools = (
+                self._tool_definitions
+                if self._tool_definitions is not None
+                else self._tools.to_api_format(read_only_only=self._control.mode is AgentMode.PLAN)
             )
-            tools = self._tools.to_api_format(read_only_only=self._control.mode is AgentMode.PLAN)
             for iteration in range(1, self._max_iterations + 1):
                 if self._control.cancel_event.is_set():
                     stop_reason = "cancelled"

@@ -41,8 +41,9 @@ def create_runtime_llm(
     project_root: Path,
     *,
     environ: Mapping[str, str] | None = None,
+    model_id: str | None = None,
 ) -> LLMClient:
-    """根据 JIXUE_LLM_MODE 返回本进程唯一的 LLMClient。"""
+    """根据运行模式和可选模型别名创建客户端，由上层负责共享。"""
 
     environment = load_project_environment(project_root, environ=environ)
     raw_mode = environment.get("JIXUE_LLM_MODE", "fake")
@@ -50,14 +51,12 @@ def create_runtime_llm(
     if mode == "fake":
         return FakeLLMClient()
     if mode != "configured":
-        raise BridgeBootstrapError(
-            f"JIXUE_LLM_MODE={raw_mode!r} 无效，可选值：fake、configured"
-        )
+        raise BridgeBootstrapError(f"JIXUE_LLM_MODE={raw_mode!r} 无效，可选值：fake、configured")
 
     try:
         config = load_llm_config(
             project_root / "config" / "models.yaml",
-            model_id=environment.get("JIXUE_MODEL_ID"),
+            model_id=model_id or environment.get("JIXUE_MODEL_ID"),
             environ=environment,
         )
     except LLMConfigError as error:

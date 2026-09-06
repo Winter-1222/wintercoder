@@ -96,6 +96,14 @@ export class PythonBridge {
     this.write(`session.${action}`, 'session_' + randomUUID(), { session_id: sessionId ?? '' })
   }
 
+  subagent(action: 'stop' | 'respond' | 'status', sessionId: string, agentId: string,
+    token?: string, allow?: boolean): void {
+    if (this.state.status !== 'ready') throw new Error('Python Bridge 尚未就绪')
+    this.write(`subagent.${action}`, 'subagent_' + randomUUID(), {
+      session_id: sessionId, agent_id: agentId, token, allow
+    })
+  }
+
   sendChat(requestId: string, text: string): void {
     if (this.state.status !== 'ready') throw new Error('Python Bridge 尚未就绪')
     this.write('chat.send', requestId, { text })

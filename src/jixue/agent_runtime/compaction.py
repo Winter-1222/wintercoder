@@ -40,8 +40,10 @@ class ContextCompactor:
     """持有会话与模型入口，所有压缩入口共用一次校验后提交的事务。"""
 
     def __init__(
-        self, conversation: ConversationManager, model: ModelStream, control: RunControl
+        self, conversation: ConversationManager, model: ModelStream, control: RunControl,
+        *, preserve_message_boundary: bool = False
     ) -> None:
+        self._preserve_message_boundary = preserve_message_boundary
         self._conversation = conversation
         self._model = model
         self._control = control
@@ -55,7 +57,10 @@ class ContextCompactor:
         """唯一请求入口：清理会话，再给当前问题附上本次动态提醒。"""
 
         clear_old_tool_results(self._conversation)
-        return _messages_with_reminder(self._conversation.to_api_format(), reminder)
+        return _messages_with_reminder(
+            self._conversation.to_api_format(merge_text=not self._preserve_message_boundary),
+            reminder,
+        )
 
     async def run_manual(self) -> AsyncIterator[AgentEvent]:
         """处理手动命令；真正的摘要事务也供自动压缩复用。"""
@@ -241,6 +246,8 @@ def _messages_with_reminder(
     """把客户端提醒附到当前问题副本，不污染真正保存的用户消息。"""
 
     result = list(messages)
+    if not reminder:
+        return result
     # 当前用户问题一定是最后一条字符串 user 消息；倒序查找可避开工具结果块。
     for index in range(len(result) - 1, -1, -1):
         message = result[index]

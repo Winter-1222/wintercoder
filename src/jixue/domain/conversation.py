@@ -87,8 +87,11 @@ class ConversationManager:
     """只保存一份工作消息；清理和摘要直接更新它，不维护平行历史。"""
 
     def __init__(
-        self, messages: Sequence[Message] | None = None, *,
-        total_usage: Usage | None = None, completed_turns: int | None = None,
+        self,
+        messages: Sequence[Message] | None = None,
+        *,
+        total_usage: Usage | None = None,
+        completed_turns: int | None = None,
     ) -> None:
         self._messages = list(messages or [])
         self._usage = total_usage or Usage(
@@ -96,7 +99,8 @@ class ConversationManager:
             sum(message.usage.output_tokens for message in self._messages),
         )
         self.completed_turns = (
-            completed_turns if completed_turns is not None
+            completed_turns
+            if completed_turns is not None
             else len(_complete_turn_starts(self._messages))
         )
 
@@ -175,10 +179,10 @@ class ConversationManager:
             if blocks != message.content:
                 self._messages[index] = replace(message, content=blocks)
 
-    def to_api_format(self) -> list[APIMessage]:
+    def to_api_format(self, *, merge_text: bool = True) -> list[APIMessage]:
         """仅做协议转换和未完成消息过滤，不再承担上下文管理。"""
 
-        return _to_api_messages(self._messages)
+        return _to_api_messages(self._messages, merge_text=merge_text)
 
     def prepare_compaction(
         self,
@@ -216,7 +220,7 @@ class ConversationManager:
         self._messages[:cutoff] = replacement
 
 
-def _to_api_messages(messages: Sequence[Message]) -> list[APIMessage]:
+def _to_api_messages(messages: Sequence[Message], *, merge_text: bool = True) -> list[APIMessage]:
     """相邻同角色文字可合并，工具消息保持原来的结构。"""
 
     result: list[APIMessage] = []
@@ -225,7 +229,8 @@ def _to_api_messages(messages: Sequence[Message]) -> list[APIMessage]:
         if message.status is not MessageStatus.COMPLETE or not content:
             continue
         if (
-            result
+            merge_text
+            and result
             and result[-1].role == message.role
             and isinstance(result[-1].content, str)
             and isinstance(content, str)

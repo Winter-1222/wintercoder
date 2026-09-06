@@ -49,6 +49,22 @@ function send(channel: string, value: unknown): void {
 }
 
 function registerIpc(): void {
+  ipcMain.handle('jixue:subagent', (event, action: unknown, sessionId: unknown,
+    agentId: unknown, token: unknown, allow: unknown) => {
+    if (!validSender(event)) throw new Error('拒绝未知窗口')
+    if (action !== 'stop' && action !== 'respond' && action !== 'status') throw new Error('子任务操作无效')
+    if (typeof sessionId !== 'string' || !/^[0-9a-f]{32}$/.test(sessionId) ||
+        typeof agentId !== 'string' || !/^sub_[0-9a-f]{32}$/.test(agentId)) {
+      throw new Error('子任务或会话编号无效')
+    }
+    if (action === 'respond' && (typeof token !== 'string' ||
+        !/^[0-9a-f]{32}$/.test(token) || typeof allow !== 'boolean')) {
+      throw new Error('子任务确认参数无效')
+    }
+    if (!bridge) throw new Error('Bridge 未创建')
+    bridge.subagent(action, sessionId, agentId, token as string | undefined,
+      allow as boolean | undefined)
+  })
   ipcMain.handle('jixue:session', (event, action: unknown, sessionId: unknown) => {
     if (!validSender(event)) throw new Error('拒绝未知窗口')
     if (typeof action !== 'string' || !['current', 'new', 'switch', 'list'].includes(action)) {

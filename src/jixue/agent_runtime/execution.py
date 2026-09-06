@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from time import perf_counter
 
 from jixue.agent_runtime.control import RunControl, cancel_in_background
@@ -41,7 +41,14 @@ class ToolRound:
 class ToolExecutor:
     """只执行通过检查的调用，结果按模型给出的顺序返回。"""
 
-    def __init__(self, tools: ToolRegistry, context: ToolContext, control: RunControl) -> None:
+    def __init__(
+        self,
+        tools: ToolRegistry,
+        context: ToolContext,
+        control: RunControl,
+        blocked_tools: frozenset[str] = frozenset(),
+    ) -> None:
+        self._blocked_tools = blocked_tools
         self._tools = tools
         self._tool_context = context
         self._control = control
@@ -55,6 +62,8 @@ class ToolExecutor:
     ) -> PermissionCheck | ToolResult:
         """在产生副作用前完成格式、工具存在性、参数、模式和权限检查。"""
 
+        if call.tool_name in self._blocked_tools:
+            return ToolResult("子 Agent 不允许再次委派或写入记忆", is_error=True)
         if call.tool_error:
             return ToolResult(call.tool_error, is_error=True)
         tool = self._tools.get(call.tool_name)
@@ -82,7 +91,7 @@ class ToolExecutor:
         started_at = perf_counter()
         result = await self._tools.execute(
             call.tool_name,
-            self._tool_context,
+            replace(self._tool_context, tool_use_id=call.tool_use_id),
             call.tool_input,
         )
         result = await self._tool_result_store.prepare(
@@ -107,10 +116,15 @@ class ToolExecutor:
 
         execution = asyncio.create_task(execute_all())
         cancel_wait = asyncio.create_task(self._control.cancel_event.wait())
-        done, _ = await asyncio.wait(
-            (execution, cancel_wait),
-            return_when=asyncio.FIRST_COMPLETED,
-        )
+        try:
+            done, _ = await asyncio.wait(
+                (execution, cancel_wait),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        except asyncio.CancelledError:
+            cancel_in_background(execution)
+            cancel_in_background(cancel_wait)
+            raise
         if cancel_wait in done:
             # 工具可能正在等待远程 HTTP；不再让这次等待占住后续聊天。
             cancel_in_background(execution)

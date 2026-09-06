@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Sequence
+from copy import deepcopy
 from dataclasses import dataclass, field
 
 from jixue.agent_runtime.control import RunControl, cancel_in_background
@@ -33,6 +34,13 @@ class ModelResponse:
         return "".join(block.text for block in self.blocks if isinstance(block, APITextBlock))
 
 
+@dataclass(frozen=True, slots=True)
+class RequestSnapshot:
+    system: str
+    messages: tuple[APIMessage, ...]
+    tools: tuple[ToolDefinition, ...]
+
+
 class ModelStream:
     """只负责请求和流转换；是否摘要、重试或执行工具由上层决定。"""
 
@@ -40,6 +48,7 @@ class ModelStream:
         self._llm = llm
         self._control = control
         self._system_prompt = system_prompt
+        self.last_request: RequestSnapshot | None = None
 
     def set_system_prompt(self, prompt: str) -> None:
         """只在新任务开始时刷新，工具循环内保持同一前缀。"""
@@ -66,10 +75,15 @@ class ModelStream:
         while not self._control.cancel_event.is_set():
             next_event = asyncio.ensure_future(anext(iterator))
             cancel_wait = asyncio.create_task(self._control.cancel_event.wait())
-            done, _ = await asyncio.wait(
-                (next_event, cancel_wait),
-                return_when=asyncio.FIRST_COMPLETED,
-            )
+            try:
+                done, _ = await asyncio.wait(
+                    (next_event, cancel_wait),
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            except asyncio.CancelledError:
+                cancel_in_background(next_event)
+                cancel_in_background(cancel_wait)
+                raise
             if cancel_wait in done:
                 # 大多数网络库会立刻响应 cancel，但少数底层连接可能要等超时才退出。
                 # 这里不能继续 await 它，否则页面会显示“正在停止”却迟迟无法解锁。
@@ -95,6 +109,9 @@ class ModelStream:
     ) -> AsyncIterator[AgentEvent]:
         """边记录一轮结果边发送事件，保持正文、工具和用量的原始顺序。"""
 
+        self.last_request = RequestSnapshot(
+            self._system_prompt, deepcopy(tuple(messages)), deepcopy(tuple(tools))
+        )
         async for item in self.stream(messages, tools):
             response.event_received = True
             if item.type is LLMEventType.TEXT:

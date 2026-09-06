@@ -15,9 +15,10 @@ type ConcurrencyCheck = Callable[[ToolInput], bool]
 
 @dataclass(frozen=True, slots=True)
 class ToolContext:
-    """执行工具时由 Agent 提供的环境；现在只需要项目根目录。"""
+    """执行工具时由 Agent 提供项目根目录和本次工具调用编号。"""
 
     project_root: Path
+    tool_use_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)

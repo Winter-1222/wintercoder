@@ -144,19 +144,27 @@ async def _run_bridge(
     """立即启动 Agent，同时在后台连接 MCP Server。"""
 
     clients: list[MCPTransport] = []
-    sessions = await asyncio.to_thread(SessionController, llm, tools, project_root)
+    sessions = await asyncio.to_thread(
+        SessionController,
+        llm,
+        tools,
+        project_root,
+        lambda model: create_runtime_llm(project_root, model_id=model),
+    )
     server = BridgeServer(
         BridgeApplication(sessions.agent, sessions),
         sys.stdin,
         sys.stdout,
         sys.stderr,
     )
+    sessions.subagents.emit = server.emit
     connect_task = asyncio.create_task(
         _connect_mcp_servers(tools, project_root, clients, server.emit)
     )
     try:
         await server.run()
     finally:
+        await sessions.subagents.close()
         connect_task.cancel()
         await asyncio.gather(connect_task, return_exceptions=True)
         for client in reversed(clients):

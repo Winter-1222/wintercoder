@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator, Sequence
 from uuid import uuid4
 
@@ -38,6 +39,23 @@ class FakeLLMClient:
         history_characters = sum(len(str(message.content)) for message in messages)
         is_compaction = "<jixue-compaction-request>" in latest_user_text
 
+        # 显式 JSON 入口用于离线验证子任务；真实模型自主选择 Agent 工具。
+        if latest_user_text.startswith("/agent "):
+            try:
+                args = json.loads(latest_user_text.removeprefix("/agent "))
+            except json.JSONDecodeError:
+                args = {}
+            usage = Usage(max(1, history_characters // 4), 8)
+            yield LLMStreamEvent(
+                LLMEventType.TOOL_USE,
+                tool_use_id=f"fake_agent_{uuid4().hex}",
+                tool_name="Agent",
+                tool_input=args if isinstance(args, dict) else {},
+            )
+            yield LLMStreamEvent(LLMEventType.USAGE, usage=usage)
+            yield LLMStreamEvent(LLMEventType.COMPLETE, usage=usage, stop_reason="tool_use")
+            return
+
         # `/loop 文件1 文件2` 会在三轮 LLM 请求中连续触发两次读文件，
         # 用来离线观察“模型 → 工具 → 模型 → 工具 → 模型”的完整循环。
         command_index = next(
@@ -68,7 +86,10 @@ class FakeLLMClient:
         # 记忆命令仅用于 Fake 离线手测，真实模型使用自然语言决定工具参数。
         memory_command = latest_user_text.split(" ", 3)
         if not is_compaction and memory_command[0] in {
-            "/memory", "/remember", "/forget", "/memory-rebuild"
+            "/memory",
+            "/remember",
+            "/forget",
+            "/memory-rebuild",
         }:
             name = "read_memory" if memory_command[0] == "/memory" else "update_memory"
             memory_input: dict[str, object] = {}
@@ -78,20 +99,28 @@ class FakeLLMClient:
             elif memory_command[0] == "/memory-rebuild":
                 memory_input = {"action": "rebuild_index"}
             elif memory_command[0] == "/forget":
-                memory_input = {"action": "forget",
-                                "name": memory_command[1] if len(memory_command) > 1 else ""}
+                memory_input = {
+                    "action": "forget",
+                    "name": memory_command[1] if len(memory_command) > 1 else "",
+                }
             else:
                 detail = memory_command[3] if len(memory_command) > 3 else ""
                 description, _, content = detail.partition("|")
-                memory_input = {"action": "remember",
-                                "type": memory_command[1] if len(memory_command) > 1 else "",
-                                "name": memory_command[2] if len(memory_command) > 2 else "",
-                                "description": description.strip(), "content": content.strip()}
+                memory_input = {
+                    "action": "remember",
+                    "type": memory_command[1] if len(memory_command) > 1 else "",
+                    "name": memory_command[2] if len(memory_command) > 2 else "",
+                    "description": description.strip(),
+                    "content": content.strip(),
+                }
             if any(tool.get("name") == name for tool in tools):
                 usage = Usage(max(1, history_characters // 4), 8)
-                yield LLMStreamEvent(LLMEventType.TOOL_USE,
-                                     tool_use_id=f"fake_memory_{uuid4().hex}",
-                                     tool_name=name, tool_input=memory_input)
+                yield LLMStreamEvent(
+                    LLMEventType.TOOL_USE,
+                    tool_use_id=f"fake_memory_{uuid4().hex}",
+                    tool_name=name,
+                    tool_input=memory_input,
+                )
                 yield LLMStreamEvent(LLMEventType.USAGE, usage=usage)
                 yield LLMStreamEvent(LLMEventType.COMPLETE, usage=usage, stop_reason="tool_use")
                 return

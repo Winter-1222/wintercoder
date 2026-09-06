@@ -10,6 +10,8 @@ function subscribe<T>(channel: string, listener: (value: T) => void): () => void
 }
 
 const api: JixueDesktopApi = {
+  subagent: (action, sessionId, agentId, token, allow) =>
+    ipcRenderer.invoke('jixue:subagent', action, sessionId, agentId, token, allow),
   session: (action, sessionId) => ipcRenderer.invoke('jixue:session', action, sessionId),
   sendChat: (requestId, text) => ipcRenderer.invoke('jixue:send-chat', requestId, text),
   cancelChat: (requestId) => ipcRenderer.invoke('jixue:cancel-chat', requestId),

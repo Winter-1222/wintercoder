@@ -468,3 +468,13 @@ button, textarea { font: inherit; }
 .session-list button:disabled, .new-session:disabled { opacity: .5; cursor: default; }
 .new-session { border: 1px solid #ddd; margin-bottom: 8px; }
 .session-error { color: #a33535; font-size: 12px; overflow-wrap: anywhere; }
+
+/* 子任务与主工具卡片相邻，完成后折叠，长结果限制在卡片内部。 */
+.subagent-card { min-width: 0; max-width: 100%; margin: -8px 0 16px 24px; border: 1px solid #d9e3eb; border-radius: 10px; background: #f5f9fc; overflow: hidden; }
+.subagent-card > summary { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 12px 16px; cursor: pointer; overflow-wrap: anywhere; }
+.subagent-card small { color: #637385; overflow-wrap: anywhere; }
+.subagent-body { padding: 0 16px 16px; min-width: 0; overflow-wrap: anywhere; }
+.subagent-body > button { display: block; margin: 12px 0; }
+.subagent-body pre { max-width: 100%; max-height: 280px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; font-size: 12px; }
+.subagent-tool { margin-top: 10px; border-top: 1px solid #d9e3eb; padding: 10px 0; }
+.subagent-tool summary { cursor: pointer; }

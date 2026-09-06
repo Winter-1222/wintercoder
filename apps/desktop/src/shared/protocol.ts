@@ -36,7 +36,30 @@ export interface SessionInfo {
   title: string
 }
 
+export interface SubagentTaskInfo {
+  agent_id: string
+  session_id: string
+  parent_tool_use_id: string
+  request_id: string
+  role: string
+  kind: string
+  status: string
+  prompt: string
+  background: boolean
+  report: string
+  model: string
+  usage: { input_tokens: number; output_tokens: number }
+  duration_ms: number
+  run_id: string
+  trace: Array<{
+    id: string; name: string; input: Record<string, unknown>; content: string
+    status: string; permission_token: string
+  }>
+}
+
 export interface JixueDesktopApi {
+  subagent: (action: 'stop' | 'respond' | 'status', sessionId: string, agentId: string,
+    token?: string, allow?: boolean) => Promise<void>
   session: (action: SessionAction, sessionId?: string) => Promise<void>
   sendChat: (requestId: string, text: string) => Promise<void>
   cancelChat: (requestId: string) => Promise<void>

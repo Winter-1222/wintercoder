@@ -7,7 +7,7 @@
 ```text
 myAgent/
 ├─ apps/desktop/       Electron + React 桌面端
-├─ config/             模型选择配置
+├─ config/             模型、MCP 和 Markdown 子角色配置
 ├─ docs/               路线、目录说明和每章唯一的 README
 ├─ scripts/            本地检查脚本
 ├─ src/jixue/          Python 后端核心（agent.py 组装，agent_runtime/ 执行）
@@ -39,6 +39,12 @@ myAgent/
 | `src/jixue/sessions/__init__.py` | 会话持久化包 |
 | `src/jixue/sessions/codec.py` | 工作消息、工具块、摘要、用量及累计任务数的快照编解码 |
 | `src/jixue/sessions/store.py` | JSONL 追加、最新快照恢复、UI 回放记录、半条尾部处理及会话列表 |
+| `src/jixue/subagents/__init__.py` | 子任务模块入口 |
+| `src/jixue/subagents/definitions.py` | 内置角色、Markdown/YAML 角色校验和提示词目录 |
+| `src/jixue/subagents/manager.py` | 两种创建路径、模型与能力选择、前后台管理、权限、通知和续接 |
+| `src/jixue/subagents/runner.py` | 消费子任务事件，维护最终状态、报告、工具轨迹、用量及存档 |
+| `src/jixue/subagents/store.py` | 安全路径、有界快照、原子写入和恢复校验 |
+| `src/jixue/tools/subagent.py` | 唯一 Agent 工具的稳定 Schema 与参数校验 |
 | `src/jixue/permission.py` | 权限判断核心：危险命令、路径沙箱、精确安全规则、三种权限模式和 ALLOW/DENY/ASK 结果 |
 | `src/jixue/domain/conversation.py` | 唯一工作消息序列，包含文字、工具块和摘要；负责协议转换、大小估算、原子替换及独立用量和轮次计数 |
 | `src/jixue/domain/events.py` | Electron 与 Python 之间的一行 JSON 信封 |
@@ -76,6 +82,8 @@ myAgent/
 | `apps/desktop/src/preload/index.ts` | 只向网页暴露白名单中的聊天、取消、模式、确认和订阅接口 |
 | `apps/desktop/src/shared/protocol.ts` | 前后端共用的事件信封、桌面 API、BridgeState 和 MCP 状态类型 |
 | `apps/desktop/src/renderer/src/App.tsx` | 聊天页面：会话侧栏与回放、模式、权限、工具确认、完成后折叠和 MCP 状态 |
+| `apps/desktop/src/renderer/src/MessageView.tsx` | 单条聊天消息、普通工具卡片及主任务确认按钮 |
+| `apps/desktop/src/renderer/src/SubagentView.tsx` | 子任务状态、折叠、按需详情、工具轨迹、独立权限和停止按钮 |
 | `apps/desktop/src/renderer/src/state.ts` | reducer：按任务把工具卡片插在回复上方，更新模式、权限、轮次与执行状态；恢复会话时让旧确认失效 |
 | `apps/desktop/src/renderer/src/styles.css` | 聊天、工具折叠卡片、权限、MCP 状态和输入区样式；限制长输入与结果的宽高 |
 | `apps/desktop/src/renderer/src/main.tsx` | React 页面入口 |
@@ -86,6 +94,7 @@ myAgent/
 
 | 文件 | 职责 |
 | --- | --- |
+| `config/agents/reviewer.md` | 可直接使用的只读审查角色示例；YAML 元信息、Markdown 行为说明 |
 | `config/models.yaml` | 三个模型的短名称和真实模型 ID |
 | `config/mcp.json` | 可提交的 MCP Server 公共配置，目前为空 |
 | `config/mcp.local.json` | 本机 MCP 配置，覆盖公共配置并由 Git 忽略 |
@@ -99,6 +108,7 @@ myAgent/
 | `docs/chapters/06-mcp/README.md` | 第六章 MCP 连接、工具包装、完整调用链和手测说明 |
 | `docs/chapters/07-context/README.md` | 第七章统一 messages、三层上下文保护、Claude Code 公开机制对照及启动和测试说明 |
 | `docs/chapters/08-memory/README.md` | 会话恢复/切换、项目指令、记忆工具、全链路核心代码和手测 |
+| `docs/chapters/09-subagents/README.md` | 子任务全部链路、核心代码、手测、限制与自测题 |
 | `scripts/test-all.ps1` | 顺序执行本地自动化检查 |
 
 本地 `tests/mcp/demo_server.py` 和 `demo_http_server.py` 分别模拟 stdio 与 HTTP
@@ -110,3 +120,5 @@ Server；对应测试覆盖两条真实闭环。每章目录只允许有一个 `
 `.jixue/tool-results/` 由程序运行时自动创建。里面保存工具完整大结果，界面和模型只接收预览；该目录不属于源码，也不会提交到 Git。
 
 `.jixue/sessions/<id>.jsonl` 保存界面事件和工作消息快照，`current.txt` 保存当前会话编号。`.jixue/memory/MEMORY.md` 保存新任务直接读取的元数据索引，记忆变更或显式重建时更新，`<name>.md` 保存含 YAML 头的独立记忆正文；它们都属于本地运行数据，不进入 Git。第八章本地专项桌面测试为 `tests/ui/ch08_electron.mjs`。
+
+`.jixue/subagents/<session_id>/<agent_id>.json` 保存可续接子对话、模型与权限边界、报告和工具轨迹；运行中断后不自动重跑。第九章本地专项测试是 `tests/test_subagents.py` 与 `tests/ui/ch09_electron.mjs`；`tests/test_review_subagent_edges.py` 覆盖控制命令通知隔离、新旧中断检查点和连续续接记账。

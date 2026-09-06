@@ -1,8 +1,9 @@
 /** 霁雪聊天界面：订阅 Bridge、发送消息、展示流式结果。 */
 
 import { useEffect, useReducer, useRef, useState } from 'react'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
+import { Fragment } from 'react'
+import { MessageView } from './MessageView'
+import { SubagentView } from './SubagentView'
 
 import type {
   AgentMode,
@@ -10,7 +11,8 @@ import type {
   McpServerStatus,
   PermissionMode,
   SessionAction,
-  SessionInfo
+  SessionInfo,
+  SubagentTaskInfo
 } from '../../shared/protocol'
 import { chatReducer, initialChatState, type UiMessage } from './state'
 
@@ -26,119 +28,6 @@ const MCP_STATUS_LABELS: Record<McpServerStatus, string> = {
   failed: '连接失败'
 }
 
-function MessageView({
-  message,
-  onPermission
-}: {
-  message: UiMessage
-  onPermission: (message: UiMessage, allow: boolean) => Promise<void>
-}): React.JSX.Element {
-  if (message.role === 'tool') {
-    const permissionBusy =
-      message.permissionStatus === 'allowing' || message.permissionStatus === 'denying'
-    const label =
-      message.permissionStatus === 'pending'
-        ? '需要确认'
-        : permissionBusy
-          ? '正在提交'
-          : message.status === 'streaming'
-            ? '工具执行中'
-            : message.status === 'failed'
-              ? '工具失败'
-              : message.status === 'cancelled'
-                ? '工具已停止'
-                : '工具完成'
-    const showPermission =
-      message.status === 'streaming' &&
-      (message.permissionStatus === 'pending' || permissionBusy)
-
-    return (
-      <details
-        // 状态变化时重置展开状态；完成后可手动展开，等待确认时重新展开。
-        key={message.status + (showPermission ? '_permission' : '')}
-        className="tool-message"
-        data-status={message.status}
-        data-permission={message.permissionStatus}
-        open={message.status === 'streaming'}
-      >
-        <summary className="tool-summary">
-          <span className="tool-chevron" aria-hidden="true">▸</span>
-          <strong>{message.name}</strong>
-          <span className="tool-status">{label}</span>
-          {message.durationMs !== undefined && <small>{message.durationMs} 毫秒</small>}
-        </summary>
-        <div className="tool-details">
-          {message.input && (
-            <details open={showPermission}>
-              <summary>查看输入参数</summary>
-              <pre>{message.input}</pre>
-            </details>
-          )}
-          {showPermission ? (
-            <div className="permission-panel">
-              <div>
-                <strong>{message.isDestructive ? '可能修改项目' : '需要你的许可'}</strong>
-                <p>{message.permissionReason || '此工具需要确认后才能执行。'}</p>
-              </div>
-              <div className="permission-actions">
-                <button
-                  className="permission-deny"
-                  aria-label={'拒绝 ' + message.name}
-                  disabled={permissionBusy}
-                  onClick={() => void onPermission(message, false)}
-                >
-                  {message.permissionStatus === 'denying' ? '拒绝中…' : '拒绝'}
-                </button>
-                <button
-                  className="permission-allow"
-                  aria-label={'允许 ' + message.name}
-                  disabled={permissionBusy}
-                  onClick={() => void onPermission(message, true)}
-                >
-                  {message.permissionStatus === 'allowing' ? '允许中…' : '允许'}
-                </button>
-              </div>
-            </div>
-          ) : (
-            <pre className="tool-output">{message.content}</pre>
-          )}
-        </div>
-      </details>
-    )
-  }
-  if (message.role === 'user') {
-    return <article className="user-message">{message.content}</article>
-  }
-  const complete = message.status === 'complete'
-  return (
-    <article className="assistant-message">
-      <span className="avatar">❄</span>
-      <div>
-        <header>
-          <strong>霁雪</strong>
-          <small>
-            {message.status === 'cancelled'
-              ? '已停止'
-              : message.status === 'failed'
-                ? '回复中断'
-                : complete
-                  ? '已完成'
-                  : '正在回复'}
-          </small>
-        </header>
-        <div className="message-body">
-          {complete ? (
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
-          ) : (
-            <pre>{message.content || ' '}</pre>
-          )}
-          {/* 光标只代表“正在接收流”。已停止的消息不能继续闪，否则会让人误以为任务还没结束。 */}
-          {message.status === 'streaming' && <span className="cursor" />}
-        </div>
-      </div>
-    </article>
-  )
-}
 
 function text(value: unknown, fallback = ''): string {
   return typeof value === 'string' ? value : fallback
@@ -160,6 +49,7 @@ export default function App(): React.JSX.Element {
   const [sessionLoading, setSessionLoading] = useState(true)
   const [sessionError, setSessionError] = useState('')
   const [clock, setClock] = useState(Date.now())
+  const sessionRef = useRef('')
   const endRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -191,7 +81,13 @@ export default function App(): React.JSX.Element {
   }, [state.messages])
 
   function handleEvent(event: BridgeEnvelope): void {
-    if (event.type === 'session.reset') {
+    if (event.type === 'subagent.updated') {
+      if (event.payload.session_id === sessionRef.current) {
+        dispatch({ type: 'subagent_updated', task: event.payload.task as SubagentTaskInfo })
+      }
+    } else if (event.type === 'error' && event.payload.scope === 'subagent') {
+      setSessionError(text(event.payload.message))
+    } else if (event.type === 'session.reset') {
       dispatch({ type: 'session_reset' })
       setSessionLoading(true)
     } else if (event.type === 'session.turn') {
@@ -201,7 +97,10 @@ export default function App(): React.JSX.Element {
       const items = Array.isArray(event.payload.sessions) ? event.payload.sessions : []
       setSessions(items.map((item) => ({ id: text(object(item).id), title: text(object(item).title) })))
       setSessionId(text(event.payload.session_id))
+      sessionRef.current = text(event.payload.session_id)
       if (event.type === 'session.loaded') {
+        dispatch({ type: 'subagents_loaded', tasks: Array.isArray(event.payload.subagents)
+          ? event.payload.subagents as SubagentTaskInfo[] : [] })
         dispatch({ type: 'session_restored', inputTokens: number(event.payload.input_tokens),
           outputTokens: number(event.payload.output_tokens) })
         dispatch({ type: 'model_changed', model: text(event.payload.model) })
@@ -309,6 +208,11 @@ export default function App(): React.JSX.Element {
       })
     }
   }
+
+  const totalUsage = state.subagents.reduce((total, task) => ({
+    inputTokens: total.inputTokens + task.usage.input_tokens,
+    outputTokens: total.outputTokens + task.usage.output_tokens
+  }), state.usage)
 
   const canSend =
     state.bridge.status === 'ready' && !!sessionId && !sessionLoading &&
@@ -463,11 +367,12 @@ export default function App(): React.JSX.Element {
           ) : (
             <div className="message-list">
               {state.messages.map((message) => (
-                <MessageView
-                  key={message.requestId + '_' + message.id}
-                  message={message}
-                  onPermission={respondPermission}
-                />
+                <Fragment key={message.requestId + '_' + message.id}>
+                  <MessageView message={message} onPermission={respondPermission} />
+                  {message.role === 'tool' && state.subagents.filter((task) =>
+                    task.parent_tool_use_id === message.id && task.request_id === message.requestId
+                  ).map((task) => <SubagentView key={task.agent_id} task={task} />)}
+                </Fragment>
               ))}
             </div>
           )}
@@ -535,8 +440,8 @@ export default function App(): React.JSX.Element {
                         ? `正在第 ${state.iteration + 1} 轮`
                         : `共 ${state.iteration} 轮`}
                   </span>
-                  <span>输入 {state.usage.inputTokens}</span>
-                  <span>输出 {state.usage.outputTokens}</span>
+                  <span>输入 {totalUsage.inputTokens}</span>
+                  <span>输出 {totalUsage.outputTokens}</span>
                   <span>{elapsed.toFixed(1)} 秒</span>
                 </div>
               </div>

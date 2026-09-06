@@ -56,9 +56,45 @@ class BridgeApplication:
                         "mcp_status",
                         "sessions",
                         "project_memory",
+                        "subagents",
                     ],
                 },
             )
+        elif command.type in {"subagent.stop", "subagent.respond", "subagent.status"}:
+            if self._sessions is None:
+                yield self._error(
+                    command.request_id, "subagents_disabled", "子任务未启用", scope="subagent"
+                )
+                return
+            try:
+                session_id = command.payload.get("session_id")
+                agent_id = command.payload.get("agent_id")
+                if session_id != self._sessions.session_id or not isinstance(agent_id, str):
+                    raise ValueError("子任务不属于当前界面会话")
+                manager = self._sessions.subagents
+                accepted = True
+                if command.type == "subagent.status":
+                    task = self._sessions.subagents.get(session_id, agent_id)
+                    yield Envelope.create("subagent.updated", task.data["request_id"], 0,
+                                          {"session_id": session_id, "task": task.public()})
+                    return
+                if command.type == "subagent.stop":
+                    await manager.stop(session_id, agent_id)
+                else:
+                    token, allow = command.payload.get("token"), command.payload.get("allow")
+                    if not isinstance(token, str) or type(allow) is not bool:
+                        raise ValueError("子任务权限参数无效")
+                    accepted = await manager.respond(session_id, agent_id, token, allow)
+                yield Envelope.create(
+                    "subagent.accepted",
+                    command.request_id,
+                    0,
+                    {"accepted": accepted, "agent_id": agent_id},
+                )
+            except (ValueError, OSError) as error:
+                yield self._error(
+                    command.request_id, "subagent_action_failed", str(error), scope="subagent"
+                )
         elif command.type.startswith("session."):
             if self._sessions is None:
                 yield self._error(
@@ -174,8 +210,16 @@ class BridgeApplication:
                             command.request_id,
                             user_text,
                         )
+                    model_text = user_text
+                    if self._sessions:
+                        self._sessions.refresh_tools()
+                        # 控制命令和空输入不消费通知，保持 Agent 的原始命令判断。
+                        if user_text.strip() and user_text.strip() != "/compact":
+                            model_text += await self._sessions.subagents.notifications(
+                                self._sessions.session_id
+                            )
                     sequence = 0
-                    async for event in self._agent.run(user_text):
+                    async for event in self._agent.run(model_text, request_id=command.request_id):
                         envelope = Envelope.create(
                             event.type.value, command.request_id, sequence, event.payload
                         )
@@ -214,6 +258,10 @@ class BridgeApplication:
             target = command.payload.get("target_request_id")
             target_request_id = target if isinstance(target, str) else ""
             accepted = target_request_id == self._active_request_id and self._agent.cancel()
+            if accepted and self._sessions:
+                await self._sessions.subagents.cancel_request(
+                    self._sessions.session_id, target_request_id
+                )
             yield Envelope.create(
                 "cancel.accepted",
                 command.request_id,
