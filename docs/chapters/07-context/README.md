@@ -20,15 +20,15 @@
 
 - `src/jixue/domain/conversation.py`：保存工作消息、工具配对、协议转换、摘要替换和累计计数。
 - `src/jixue/context.py`：三层策略、大结果存取、摘要提示词和摘要文本校验。
-- `src/jixue/agent.py`：执行模型与工具循环，统一请求入口 `_request_messages()`，共用摘要事务。
+- `src/jixue/agent.py`：组装所有组件；`agent_runtime/loop.py` 协调模型与工具；`agent_runtime/compaction.py` 的 `request_messages()` 整理请求，`apply()` 执行共用摘要事务。
 - `src/jixue/llm/fake.py`：离线手测，工具 ID 跨任务唯一。
 - `src/jixue/tools/read_artifact.py`：凭 artifact 编号搜索或分段读取完整结果。
 
 ## 完整链路
 
 ```text
-chat.send → Agent.run → conversation.add_user
-  → _request_messages：清旧工具正文 → 转 APIMessage → 附本次动态提醒
+chat.send → Agent.run → AgentLoop.run → conversation.add_user
+  → ContextCompactor.request_messages：清旧工具正文 → 转 APIMessage → 附本次动态提醒
   → 超过预算时运行共用摘要事务，再从会话读取请求
   → LLM
       ├─ 请求工具：执行 → 大结果保护 → 发 UI 事件

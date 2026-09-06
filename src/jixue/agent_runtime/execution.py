@@ -1,0 +1,242 @@
+"""工具批次执行：校验与权限确认、并发、结果落盘和异常次数保护。"""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import AsyncIterator, Sequence
+from dataclasses import dataclass, field
+from time import perf_counter
+
+from jixue.agent_runtime.control import RunControl, cancel_in_background
+from jixue.agent_runtime.events import (
+    AgentEvent,
+    AgentEventType,
+    AgentMode,
+    cancelled_tool_event,
+    event,
+)
+from jixue.context import ToolResultStore
+from jixue.domain.conversation import APIContentBlock, APIToolResultBlock
+from jixue.llm.base import LLMStreamEvent
+from jixue.permission import (
+    PermissionCheck,
+    PermissionDecision,
+    PermissionMode,
+    evaluate_permission,
+)
+from jixue.tools import ToolContext, ToolRegistry, ToolResult
+
+INVALID_TOOL_LIMIT = 3
+
+
+@dataclass(slots=True)
+class ToolRound:
+    """一轮工具执行结果；异常次数从上一轮接续，不另存消息历史。"""
+
+    results: list[APIContentBlock] = field(default_factory=list)
+    consecutive_invalid: int = 0
+    stop_reason: str | None = None
+
+
+class ToolExecutor:
+    """只执行通过检查的调用，结果按模型给出的顺序返回。"""
+
+    def __init__(self, tools: ToolRegistry, context: ToolContext, control: RunControl) -> None:
+        self._tools = tools
+        self._tool_context = context
+        self._control = control
+        self._tool_result_store = ToolResultStore(context.project_root)
+
+    def _check_tool_call(
+        self,
+        call: LLMStreamEvent,
+        mode: AgentMode,
+        permission_mode: PermissionMode,
+    ) -> PermissionCheck | ToolResult:
+        """在产生副作用前完成格式、工具存在性、参数、模式和权限检查。"""
+
+        if call.tool_error:
+            return ToolResult(call.tool_error, is_error=True)
+        tool = self._tools.get(call.tool_name)
+        if tool is None:
+            return ToolResult(f"工具不存在或未启用：{call.tool_name}", is_error=True)
+        input_error = tool.validate_input(call.tool_input)
+        if input_error:
+            return ToolResult(f"工具参数错误：{input_error}", is_error=True)
+        if mode is AgentMode.PLAN and not tool.is_read_only():
+            # 即使模型猜出了未展示的写工具名，也会在真正执行前被第二层保护拦住。
+            return ToolResult("Plan 模式只允许使用只读工具", is_error=True)
+        return evaluate_permission(
+            self._tool_context.project_root,
+            tool,
+            call.tool_input,
+            permission_mode,
+        )
+
+    async def _execute_tool_call(
+        self,
+        call: LLMStreamEvent,
+    ) -> tuple[ToolResult, int]:
+        """执行已经通过权限检查的工具；确认等待时间不计入工具耗时。"""
+
+        started_at = perf_counter()
+        result = await self._tools.execute(
+            call.tool_name,
+            self._tool_context,
+            call.tool_input,
+        )
+        result = await self._tool_result_store.prepare(
+            call.tool_use_id,
+            call.tool_name,
+            result,
+        )
+        duration_ms = round((perf_counter() - started_at) * 1000)
+        return result, duration_ms
+
+    async def _execute_tool_batch(
+        self,
+        calls: Sequence[LLMStreamEvent],
+    ) -> list[tuple[ToolResult, int]] | None:
+        """等待一批工具；用户取消时立即放弃等待并让 Agent 收尾。"""
+
+        if not calls:
+            return []
+
+        async def execute_all() -> list[tuple[ToolResult, int]]:
+            return list(await asyncio.gather(*(self._execute_tool_call(call) for call in calls)))
+
+        execution = asyncio.create_task(execute_all())
+        cancel_wait = asyncio.create_task(self._control.cancel_event.wait())
+        done, _ = await asyncio.wait(
+            (execution, cancel_wait),
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if cancel_wait in done:
+            # 工具可能正在等待远程 HTTP；不再让这次等待占住后续聊天。
+            cancel_in_background(execution)
+            return None
+
+        cancel_wait.cancel()
+        await asyncio.gather(cancel_wait, return_exceptions=True)
+        return execution.result()
+
+    async def execute(
+        self,
+        calls: Sequence[LLMStreamEvent],
+        result: ToolRound,
+    ) -> AsyncIterator[AgentEvent]:
+        """一轮工具全部结束后，循环才把调用和结果一起写入会话。"""
+
+        pending = list(calls)
+        for batch in partition_tool_calls(calls, self._tools):
+            if self._control.cancel_event.is_set():
+                break
+            executions: list[tuple[ToolResult, int] | None] = [None] * len(batch)
+            ready: list[tuple[int, LLMStreamEvent]] = []
+            for index, call in enumerate(batch):
+                check = self._check_tool_call(
+                    call, self._control.mode, self._control.permission_mode
+                )
+                if isinstance(check, ToolResult):
+                    executions[index] = (check, 0)
+                    continue
+                if check.decision is PermissionDecision.DENY:
+                    executions[index] = (ToolResult(f"权限拒绝：{check.reason}", is_error=True), 0)
+                    continue
+                if check.decision is PermissionDecision.ASK:
+                    waiter = self._control.begin_permission(call.tool_use_id)
+                    tool = self._tools.get(call.tool_name)
+                    assert tool is not None
+                    yield event(
+                        AgentEventType.PERMISSION_REQUEST,
+                        id=call.tool_use_id,
+                        name=call.tool_name,
+                        input=dict(call.tool_input),
+                        reason=check.reason,
+                        is_destructive=tool.is_destructive(),
+                    )
+                    try:
+                        allowed = await waiter
+                    finally:
+                        self._control.clear_permission()
+                    if self._control.cancel_event.is_set():
+                        break
+                    if not allowed:
+                        executions[index] = (ToolResult("用户拒绝了本次工具调用", is_error=True), 0)
+                        continue
+                ready.append((index, call))
+            if self._control.cancel_event.is_set():
+                break
+            completed = await self._execute_tool_batch([call for _, call in ready])
+            if completed is None:
+                break
+            for (index, _), completed_execution in zip(ready, completed, strict=True):
+                executions[index] = completed_execution
+            for call, execution in zip(batch, executions, strict=True):
+                if execution is None:
+                    raise RuntimeError("工具批次存在未处理的调用")
+                tool_result, duration_ms = execution
+                invalid = not call.tool_error and self._tools.get(call.tool_name) is None
+                result.consecutive_invalid = result.consecutive_invalid + 1 if invalid else 0
+                result.results.append(
+                    APIToolResultBlock(call.tool_use_id, tool_result.content, tool_result.is_error)
+                )
+                pending.remove(call)
+                yield event(
+                    AgentEventType.TOOL_RESULT,
+                    id=call.tool_use_id,
+                    name=call.tool_name,
+                    content=tool_result.content,
+                    is_error=tool_result.is_error,
+                    duration_ms=duration_ms,
+                    metadata=dict(tool_result.metadata),
+                )
+                if result.consecutive_invalid >= INVALID_TOOL_LIMIT:
+                    result.stop_reason = "invalid_tool_limit"
+                    for item in pending:
+                        yield unexecuted_tool_event(item, "连续异常工具请求过多，工具未执行")
+                    return
+        if self._control.cancel_event.is_set():
+            result.stop_reason = "cancelled"
+            for item in pending:
+                yield cancelled_tool_event(item)
+
+
+def partition_tool_calls(
+    calls: Sequence[LLMStreamEvent],
+    tools: ToolRegistry,
+) -> list[list[LLMStreamEvent]]:
+    """把连续安全调用放在一起，不安全调用各自成为一个串行批次。"""
+
+    batches: list[list[LLMStreamEvent]] = []
+    safe_batch: list[LLMStreamEvent] = []
+    for call in calls:
+        tool = tools.get(call.tool_name)
+        is_safe = (
+            not call.tool_error and tool is not None and tool.is_concurrency_safe(call.tool_input)
+        )
+        if is_safe:
+            safe_batch.append(call)
+            continue
+        if safe_batch:
+            batches.append(safe_batch)
+            safe_batch = []
+        # 工具不存在、参数 JSON 损坏和声明不安全的调用都采用保守串行。
+        batches.append([call])
+    if safe_batch:
+        batches.append(safe_batch)
+    return batches
+
+
+def unexecuted_tool_event(call: LLMStreamEvent, reason: str) -> AgentEvent:
+    """未执行的工具也要结束卡片，不能留在执行中。"""
+
+    return event(
+        AgentEventType.TOOL_RESULT,
+        id=call.tool_use_id,
+        name=call.tool_name,
+        content=reason,
+        is_error=True,
+        duration_ms=0,
+        metadata={},
+    )

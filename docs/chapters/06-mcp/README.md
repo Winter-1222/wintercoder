@@ -31,7 +31,7 @@
 5. `apps/desktop/src/shared/protocol.ts` 与 `main/bridge-process.ts`：看 Main 如何缓存状态。
 6. `apps/desktop/src/renderer/src/state.ts` 与 `App.tsx`：看状态怎样显示到侧边栏。
 7. `src/jixue/tools/registry.py`：复习工具如何导出给模型、如何按名称执行。
-8. `src/jixue/agent.py`：最后看现有循环怎样直接使用注册后的 MCP 工具。
+8. `src/jixue/agent_runtime/execution.py`：最后看工具执行器怎样直接使用注册后的 MCP 工具。
 
 ## 先分清四个角色
 
@@ -114,7 +114,7 @@ connect() 失败
   → loop_complete，输入框恢复
 ~~~
 
-注意：`agent.py` 没有增加“如果是 MCP 就怎样”的判断。Agent 只认识统一的 `Tool`，这就是包装器存在的意义。
+注意：`agent_runtime/execution.py` 没有增加“如果是 MCP 就怎样”的判断。Agent 只认识统一的 `Tool`，这就是包装器存在的意义。
 
 核心伪代码只有这些：
 

@@ -10,7 +10,7 @@ myAgent/
 ├─ config/             模型选择配置
 ├─ docs/               路线、目录说明和每章唯一的 README
 ├─ scripts/            本地检查脚本
-├─ src/jixue/          Python 后端核心
+├─ src/jixue/          Python 后端核心（agent.py 组装，agent_runtime/ 执行）
 ├─ tests/              本地测试，Git 忽略
 ├─ .jixue/             工具大结果等运行数据，Git 忽略
 ├─ .env                本地密钥，Git 忽略
@@ -23,7 +23,14 @@ myAgent/
 
 | 文件 | 职责 |
 | --- | --- |
-| `src/jixue/agent.py` | Agent 核心：文字和工具轮统一写入会话，单一请求入口；共用摘要事务、预算触发、超长单次重试和失败暂停 |
+| `src/jixue/agent.py` | 唯一组装与对外入口：显式连接运行控制、模型流、工具执行、压缩器和循环，分发普通任务与 `/compact` |
+| `src/jixue/agent_runtime/__init__.py` | Agent 内部运行组件包；不反向导入组装入口 |
+| `src/jixue/agent_runtime/loop.py` | 普通任务循环：请求模型、执行工具、成对写回会话、任务收尾；控制自动摘要和超长单次重试 |
+| `src/jixue/agent_runtime/model.py` | 可取消模型流，逐次响应收集与正文、工具、用量事件转换；不执行工具或决定压缩 |
+| `src/jixue/agent_runtime/execution.py` | 工具参数与权限检查、确认等待、安全分批并发、结果落盘及连续异常工具保护 |
+| `src/jixue/agent_runtime/compaction.py` | 请求消息整理、动态提醒、手动/自动摘要共用事务，以及连续失败暂停 |
+| `src/jixue/agent_runtime/control.py` | 运行状态、Plan/Do、权限模式、统一取消信号及一次性权限回复 |
+| `src/jixue/agent_runtime/events.py` | Agent 事件合同与公共事件构造，不持有会话或执行组件 |
 | `src/jixue/context.py` | 三层上下文策略：大结果落盘、成轮清理旧工具正文、摘要触发与资料文字转换；无独立活动状态 |
 | `src/jixue/prompt.py` | 生成稳定的七段式 System Prompt，以及每轮动态的任务模式、权限模式、时间和 Git 提醒 |
 | `src/jixue/permission.py` | 权限判断核心：危险命令、路径沙箱、精确安全规则、三种权限模式和 ALLOW/DENY/ASK 结果 |
@@ -50,7 +57,7 @@ myAgent/
 | `src/jixue/tools/bash.py` | 在项目根目录执行 PowerShell/Bash，限制时长并移除常见密钥环境变量；完整输出交给统一的上下文保护 |
 | `src/jixue/tools/__init__.py` | 工具层公开导入入口 |
 
-`agent.py` 是现在最先阅读的核心；`domain` 不知道 Electron 和 Anthropic；`adapters` 藏住外部 SDK；`bridge` 只负责连接桌面端。
+`agent.py` 是最先阅读的组装图，接着读 `agent_runtime/loop.py` 的 `run()` 看完整任务链；`domain` 不知道 Electron 和 Anthropic；`adapters` 藏住外部 SDK；`bridge` 只负责连接桌面端。
 
 ## Electron 桌面端
 

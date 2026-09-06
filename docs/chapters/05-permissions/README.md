@@ -14,7 +14,7 @@
 ## 推荐阅读顺序
 
 1. src/jixue/permission.py：先看 PermissionMode、PermissionDecision 和 evaluate_permission()。
-2. src/jixue/agent.py：搜索 _check_tool_call()，看权限判断位于真正执行之前。
+2. src/jixue/agent_runtime/execution.py：搜索 _check_tool_call()，看权限判断位于真正执行之前。
 3. src/jixue/bridge/application.py：搜索 permission.mode 和 permission.respond。
 4. apps/desktop/src/shared/protocol.ts：看 Electron 与 Python 约定了哪些方法。
 5. apps/desktop/src/renderer/src/state.ts：看 reducer 如何保存权限模式和确认卡片状态。
@@ -92,7 +92,7 @@ git branch --show-current
 ~~~text
 用户发送消息
   → 第 1 轮 LLM 返回 write_file 的 tool_use
-  → Agent._check_tool_call() 校验工具名和参数
+  → ToolExecutor._check_tool_call() 校验工具名和参数
   → evaluate_permission() 依次检查五层规则
   → 默认模式得到 ASK
   → Agent 创建 Future 并发出 permission_request

@@ -22,7 +22,7 @@
 3. `src/jixue/tools/glob.py`：看怎样按模式查找路径。
 4. `src/jixue/tools/grep.py`：看怎样遍历文件并返回行号。
 5. `src/jixue/tools/registry.py`：看工具怎样集中管理。
-6. `src/jixue/agent.py`：看 `Agent.run()` 怎样执行工具并继续循环。
+6. `src/jixue/agent_runtime/loop.py` 和 `execution.py`：看主循环怎样交给工具执行器，再把结果写回会话。
 7. `src/jixue/llm/adapters/anthropic_client.py`：最后看领域类型怎样转成 SDK 类型。
 
 如果只抓主线，先读第 1、2、5、6 个文件。

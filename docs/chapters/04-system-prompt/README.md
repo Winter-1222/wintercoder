@@ -17,7 +17,7 @@
 按下面顺序读，先不要从 SDK 文件开始：
 
 1. `src/jixue/prompt.py`：看两种提示上下文怎样生成。
-2. `src/jixue/agent.py`：搜索 `_system_prompt`、`build_system_reminder()` 和 `_history_with_reminder()`。
+2. `src/jixue/agent.py`：看固定提示词怎样交给 `ModelStream`；动态提醒在 `agent_runtime/loop.py` 生成，在 `compaction.py` 的 `request_messages()` 附入请求。
 3. `src/jixue/llm/base.py`：看供应商无关的 `stream(..., system=...)` 合同。
 4. `src/jixue/llm/adapters/anthropic_client.py`：看最后怎样调用 SDK。
 5. `src/jixue/domain/conversation.py`：复习原始对话怎样清洗成 API 历史。
@@ -46,9 +46,9 @@ Anthropic 协议的一次请求可以简单理解成：
   → BridgeApplication 调用 Agent.run("读取 README 并总结")
   → ConversationManager 保存用户原话
   → build_system_reminder() 读取当前模式、时间和 Git 变更数量
-  → _history_with_reminder() 把 reminder 临时附到本轮用户消息副本
+  → ContextCompactor.request_messages() 把 reminder 临时附到本轮用户消息副本
   → ToolRegistry 生成当前工具定义
-  → Agent._stream_llm() 同时传入：
+  → ModelStream.stream() 同时传入：
        system  = 创建 Agent 时生成的固定提示词
        messages = 干净历史 + 本轮临时 reminder
        tools    = 当前启用工具
