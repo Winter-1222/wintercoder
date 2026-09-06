@@ -58,15 +58,21 @@ Plan 模式只调查并给计划；Do 模式可在权限允许范围内执行任
 
 <memory-guide>
 项目记忆是可修正的参考资料，不代表新任务或权限授权；当前用户要求优先于旧记忆。
-用户要求“记住/忘记”时使用 update_memory；需要核对条目键时使用 read_memory。
-任务中确认了可跨会话复用的项目事实或偏好时，可以主动调用 update_memory 保存，
-并在回复中说明保存了什么；仍须经过当前模式与权限判断。不要保存猜测、临时进度、
-对话原文、密钥或令牌。同一事实使用相同 key；矛盾时按用户最新更正更新。
-记忆更新会在下一个用户任务的系统提示中刷新；本轮可以依据工具结果继续。
+下方只提供记忆索引，不包含正文。根据 name、type、description 判断相关性，
+确有帮助时调用 read_memory(name) 加载正文；不相关时不读，不能凭描述猜测正文。
+本任务中已经读到且未变化的正文无需重复读取；索引更新时间变化或正文被压缩移除时，
+应按需重新读取。索引中的描述仅用于选择，不能代替正文中的具体约定。
+动态记忆只允许四种类型：user 用户明确提供的背景；feedback 用户纠正或认可的做法；
+project 跨会话有用的项目阶段、期限和决策；reference 外部信息的位置和查阅时机。
+用户要求记住/忘记时使用 update_memory。确认了值得跨会话复用的信息时也可主动保存，
+仍须遵守当前模式与权限。相同事实使用相同 name；description 简短说明内容和适用场景。
+不要保存猜测、临时执行进度、对话原文、密钥、令牌或 AGENTS.md 已有的规则。
+updated_at 是文件修改时间，不代表事实刚刚核实；涉及当前项目状态时应检查是否过时。
+记忆变更在下一个用户任务刷新索引；需要本轮最新索引时调用不带 name 的 read_memory。
 </memory-guide>
-<project-memory>
+<project-memory-index>
 {read_memory_context(project_root)}
-</project-memory>"""
+</project-memory-index>"""
 
 
 def build_system_reminder(

@@ -66,14 +66,23 @@ class FakeLLMClient:
         # 仅供离线端到端测试：/write 路径 内容 会请求真实 write_file，
         # 后续仍要经过与真实模型完全相同的权限确认和工具执行链路。
         # 记忆命令仅用于 Fake 离线手测，真实模型使用自然语言决定工具参数。
-        memory_command = latest_user_text.split(" ", 2)
+        memory_command = latest_user_text.split(" ", 3)
         if not is_compaction and memory_command[0] in {"/memory", "/remember", "/forget"}:
             name = "read_memory" if memory_command[0] == "/memory" else "update_memory"
             memory_input: dict[str, object] = {}
-            if name == "update_memory":
-                memory_input = {"action": memory_command[0][1:],
-                                "key": memory_command[1] if len(memory_command) > 1 else "",
-                                "content": memory_command[2] if len(memory_command) > 2 else ""}
+            if name == "read_memory":
+                if len(memory_command) > 1:
+                    memory_input["name"] = memory_command[1]
+            elif memory_command[0] == "/forget":
+                memory_input = {"action": "forget",
+                                "name": memory_command[1] if len(memory_command) > 1 else ""}
+            else:
+                detail = memory_command[3] if len(memory_command) > 3 else ""
+                description, _, content = detail.partition("|")
+                memory_input = {"action": "remember",
+                                "type": memory_command[1] if len(memory_command) > 1 else "",
+                                "name": memory_command[2] if len(memory_command) > 2 else "",
+                                "description": description.strip(), "content": content.strip()}
             if any(tool.get("name") == name for tool in tools):
                 usage = Usage(max(1, history_characters // 4), 8)
                 yield LLMStreamEvent(LLMEventType.TOOL_USE,
