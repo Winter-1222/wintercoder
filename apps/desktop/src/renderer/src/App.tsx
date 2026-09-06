@@ -45,23 +45,29 @@ function MessageView({
             ? '工具执行中'
             : message.status === 'failed'
               ? '工具失败'
-              : '工具完成'
+              : message.status === 'cancelled'
+                ? '工具已停止'
+                : '工具完成'
     const showPermission =
       message.status === 'streaming' &&
       (message.permissionStatus === 'pending' || permissionBusy)
 
     return (
-      <article
+      <details
+        // 状态变化时重置展开状态；完成后可手动展开，等待确认时重新展开。
+        key={message.status + (showPermission ? '_permission' : '')}
         className="tool-message"
         data-status={message.status}
         data-permission={message.permissionStatus}
+        open={message.status === 'streaming'}
       >
-        <span>{label}</span>
-        <div>
-          <header>
-            <strong>{message.name}</strong>
-            {message.durationMs !== undefined && <small>{message.durationMs} 毫秒</small>}
-          </header>
+        <summary className="tool-summary">
+          <span className="tool-chevron" aria-hidden="true">▸</span>
+          <strong>{message.name}</strong>
+          <span className="tool-status">{label}</span>
+          {message.durationMs !== undefined && <small>{message.durationMs} 毫秒</small>}
+        </summary>
+        <div className="tool-details">
           {message.input && (
             <details open={showPermission}>
               <summary>查看输入参数</summary>
@@ -97,7 +103,7 @@ function MessageView({
             <pre className="tool-output">{message.content}</pre>
           )}
         </div>
-      </article>
+      </details>
     )
   }
   if (message.role === 'user') {

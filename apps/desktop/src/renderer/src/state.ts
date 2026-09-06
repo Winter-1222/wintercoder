@@ -214,23 +214,30 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           content: message.content + action.text
         }))
       }
-    case 'tool_received':
-      // 先记录模型想调用什么；真正的结果会由后续 tool_completed 更新进来。
+    case 'tool_received': {
+      // UI 把同一任务的工具按调用顺序插到回复前；后端消息和存档顺序不变。
+      const assistantIndex = state.messages.findIndex(
+        (message) => message.requestId === action.requestId && message.role === 'assistant'
+      )
+      const insertionIndex = assistantIndex < 0 ? state.messages.length : assistantIndex
+      const tool: UiMessage = {
+        id: action.toolUseId,
+        requestId: action.requestId,
+        role: 'tool',
+        name: action.name,
+        input: action.input,
+        content: action.error || '等待工具执行…',
+        status: action.error ? 'failed' : 'streaming'
+      }
       return {
         ...state,
         messages: [
-          ...state.messages,
-          {
-            id: action.toolUseId,
-            requestId: action.requestId,
-            role: 'tool',
-            name: action.name,
-            input: action.input,
-            content: action.error || '等待工具执行…',
-            status: action.error ? 'failed' : 'streaming'
-          }
+          ...state.messages.slice(0, insertionIndex),
+          tool,
+          ...state.messages.slice(insertionIndex)
         ]
       }
+    }
     case 'permission_requested':
       // permission_request 不会新建卡片，而是把已有 tool_use 卡片切换成“等待确认”。
       return {

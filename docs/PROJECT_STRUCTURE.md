@@ -75,9 +75,9 @@ myAgent/
 | `apps/desktop/src/main/bridge-process.ts` | 启动 Conda 子进程，处理 NDJSON，并缓存 Bridge 与每个 MCP Server 的状态 |
 | `apps/desktop/src/preload/index.ts` | 只向网页暴露白名单中的聊天、取消、模式、确认和订阅接口 |
 | `apps/desktop/src/shared/protocol.ts` | 前后端共用的事件信封、桌面 API、BridgeState 和 MCP 状态类型 |
-| `apps/desktop/src/renderer/src/App.tsx` | 聊天页面：会话侧栏与回放、模式、权限、工具确认和 MCP 状态 |
-| `apps/desktop/src/renderer/src/state.ts` | reducer：更新任务模式、权限模式、工具卡片、轮次、停止和完成状态；恢复会话时让旧确认失效 |
-| `apps/desktop/src/renderer/src/styles.css` | Codex 风格的聊天、工具、权限卡片、MCP 状态和输入区样式 |
+| `apps/desktop/src/renderer/src/App.tsx` | 聊天页面：会话侧栏与回放、模式、权限、工具确认、完成后折叠和 MCP 状态 |
+| `apps/desktop/src/renderer/src/state.ts` | reducer：按任务把工具卡片插在回复上方，更新模式、权限、轮次与执行状态；恢复会话时让旧确认失效 |
+| `apps/desktop/src/renderer/src/styles.css` | 聊天、工具折叠卡片、权限、MCP 状态和输入区样式；限制长输入与结果的宽高 |
 | `apps/desktop/src/renderer/src/main.tsx` | React 页面入口 |
 
 其余 `electron.vite.config.ts`、`tsconfig.json` 和各级 `package.json` 是构建配置，不参与一条消息的业务处理。

@@ -11,7 +11,7 @@ button, textarea { font: inherit; }
 
 .app-shell {
   display: grid;
-  grid-template-columns: 230px 1fr;
+  grid-template-columns: 230px minmax(0, 1fr);
   height: 100%;
   min-height: 0;
 }
@@ -196,7 +196,7 @@ button, textarea { font: inherit; }
 
 .assistant-message {
   display: grid;
-  grid-template-columns: 28px 1fr;
+  grid-template-columns: 28px minmax(0, 1fr);
   gap: 12px;
   margin-bottom: 30px;
 }
@@ -219,31 +219,53 @@ button, textarea { font: inherit; }
 }
 
 .assistant-message header small { color: #96968f; }
-.message-body { line-height: 1.7; }
+.message-body { min-width: 0; overflow-wrap: anywhere; line-height: 1.7; }
+.assistant-message > div { min-width: 0; }
+.user-message { overflow-wrap: anywhere; }
 .message-body > :first-child { margin-top: 0; }
-.message-body pre { margin: 0; font: inherit; white-space: pre-wrap; }
+.message-body pre { max-width: 100%; margin: 0; overflow: auto; font: inherit; white-space: pre-wrap; }
 .message-body code { padding: 2px 5px; border-radius: 4px; background: #f0f0ed; }
 .message-body pre code { display: block; padding: 12px; overflow: auto; }
 
+/* 网格子项允许收缩；长输入在卡片内滚动，长结果在卡片内换行。 */
 .tool-message {
-  display: grid;
-  grid-template-columns: 72px 1fr;
-  gap: 12px;
-  margin: -12px 0 26px 40px;
-  padding: 12px 14px;
+  min-width: 0;
+  margin: 0 0 12px 40px;
   border: 1px solid #dde3e4;
   border-radius: 10px;
   background: #f5f7f7;
 }
 
-.tool-message > span { color: #718087; font-size: 12px; }
-.tool-message strong { font-size: 13px; }
-.tool-message pre { margin: 6px 0 0; overflow: auto; color: #596367; font-size: 12px; }
-.tool-message header { display: flex; align-items: center; justify-content: space-between; }
-.tool-message header small { color: #849095; }
-.tool-message details { margin-top: 7px; color: #718087; font-size: 12px; }
-.tool-message summary { cursor: pointer; }
-.tool-message .tool-output { max-height: 180px; white-space: pre-wrap; }
+.tool-summary {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 12px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.tool-summary::-webkit-details-marker { display: none; }
+.tool-summary:focus-visible { outline: 2px solid #78919a; outline-offset: 2px; border-radius: 9px; }
+.tool-summary strong { min-width: 0; overflow-wrap: anywhere; font-size: 13px; }
+.tool-summary small { color: #849095; white-space: nowrap; }
+.tool-status, .tool-chevron { color: #718087; font-size: 12px; }
+.tool-status { white-space: nowrap; }
+.tool-chevron { transition: transform 120ms; }
+.tool-message[open] > .tool-summary .tool-chevron { transform: rotate(90deg); }
+.tool-details { min-width: 0; padding: 0 12px 12px; }
+.tool-message pre {
+  max-width: 100%;
+  max-height: 240px;
+  margin: 6px 0 0;
+  overflow: auto;
+  color: #596367;
+  font-size: 12px;
+}
+.tool-details > details { min-width: 0; margin-top: 7px; color: #718087; font-size: 12px; }
+.tool-details > details > summary { cursor: pointer; }
+.tool-message .tool-output { white-space: pre-wrap; overflow-wrap: anywhere; }
 .tool-message[data-status='failed'] { border-color: #e2c4bf; background: #fff6f4; }
 .tool-message[data-permission='pending'],
 .tool-message[data-permission='allowing'],
@@ -270,6 +292,7 @@ button, textarea { font: inherit; }
   color: #81745c;
   font-size: 12px;
   line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .permission-actions {
@@ -430,7 +453,7 @@ button, textarea { font: inherit; }
 @keyframes blink { 50% { opacity: 0; } }
 
 @media (max-width: 960px) {
-  .app-shell { grid-template-columns: 190px 1fr; }
+  .app-shell { grid-template-columns: 190px minmax(0, 1fr); }
   .run-status { gap: 6px; }
   .permission-panel { align-items: stretch; flex-direction: column; gap: 10px; }
   .permission-actions { justify-content: flex-end; }
