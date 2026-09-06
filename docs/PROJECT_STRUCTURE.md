@@ -34,8 +34,8 @@ myAgent/
 | `src/jixue/context.py` | 三层上下文策略：大结果落盘、成轮清理旧工具正文、摘要触发与资料文字转换；无独立活动状态 |
 | `src/jixue/prompt.py` | 拼装基础 System Prompt、项目指令和记忆，以及每轮模式、时间和 Git 动态提醒 |
 | `src/jixue/project_context.py` | 有界读取根目录 AGENTS.md，拒绝指向项目外的路径 |
-| `src/jixue/memory.py` | 独立记忆文件存储、元数据扫描、按需读取、同名更新/忘记、进程内锁和索引派生恢复 |
-| `src/jixue/memory_format.py` | 四种记忆类型、frontmatter 合同、名称与大小校验、正文和索引格式 |
+| `src/jixue/memory.py` | 独立记忆存储、直接读磁盘索引、按需读正文、变更后更新索引与显式重建、进程内锁 |
+| `src/jixue/memory_format.py` | 四种记忆类型、frontmatter 合同、名称与大小校验、正文和索引格式、磁盘索引文本校验 |
 | `src/jixue/sessions/__init__.py` | 会话持久化包 |
 | `src/jixue/sessions/codec.py` | 工作消息、工具块、摘要、用量及累计任务数的快照编解码 |
 | `src/jixue/sessions/store.py` | JSONL 追加、最新快照恢复、UI 回放记录、半条尾部处理及会话列表 |
@@ -62,7 +62,7 @@ myAgent/
 | `src/jixue/tools/grep.py` | 在项目文本文件中搜索字面内容并返回行号，跳过密钥和 `.jixue` |
 | `src/jixue/tools/write_tools.py` | write_file 整体写入文件；edit_file 只替换唯一匹配的文字 |
 | `src/jixue/tools/bash.py` | 在项目根目录执行 PowerShell/Bash，限制时长并移除常见密钥环境变量；完整输出交给统一的上下文保护 |
-| `src/jixue/tools/memory.py` | read_memory 按需读索引或指定正文、update_memory 四类记忆更新/忘记；沿用模式和权限链 |
+| `src/jixue/tools/memory.py` | read_memory 按需读索引或指定正文、update_memory 四类记忆更新/忘记及 rebuild_index 重建索引；沿用模式和权限链 |
 | `src/jixue/tools/__init__.py` | 工具层公开导入入口 |
 
 `agent.py` 是最先阅读的组装图，接着读 `agent_runtime/loop.py` 的 `run()` 看完整任务链；`domain` 不知道 Electron 和 Anthropic；`adapters` 藏住外部 SDK；`bridge` 只负责连接桌面端。
@@ -109,4 +109,4 @@ Server；对应测试覆盖两条真实闭环。每章目录只允许有一个 `
 
 `.jixue/tool-results/` 由程序运行时自动创建。里面保存工具完整大结果，界面和模型只接收预览；该目录不属于源码，也不会提交到 Git。
 
-`.jixue/sessions/<id>.jsonl` 保存界面事件和工作消息快照，`current.txt` 保存当前会话编号。`.jixue/memory/MEMORY.md` 保存生成的元数据索引，`<name>.md` 保存含 YAML 头的独立记忆正文；它们都属于本地运行数据，不进入 Git。第八章本地专项桌面测试为 `tests/ui/ch08_electron.mjs`。
+`.jixue/sessions/<id>.jsonl` 保存界面事件和工作消息快照，`current.txt` 保存当前会话编号。`.jixue/memory/MEMORY.md` 保存新任务直接读取的元数据索引，记忆变更或显式重建时更新，`<name>.md` 保存含 YAML 头的独立记忆正文；它们都属于本地运行数据，不进入 Git。第八章本地专项桌面测试为 `tests/ui/ch08_electron.mjs`。

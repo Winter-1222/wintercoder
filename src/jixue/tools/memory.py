@@ -31,8 +31,10 @@ def _validate_read(tool_input: ToolInput) -> str | None:
 
 def _validate_update(tool_input: ToolInput) -> str | None:
     action = tool_input.get("action")
-    if not isinstance(action, str) or action not in {"remember", "forget"}:
-        return "action 只允许 remember 或 forget"
+    if not isinstance(action, str) or action not in {"remember", "forget", "rebuild_index"}:
+        return "action 只允许 remember、forget 或 rebuild_index"
+    if action == "rebuild_index":
+        return None if set(tool_input) == {"action"} else "rebuild_index 只接受 action"
     allowed = {"action", "name", "description", "type", "content"}
     if set(tool_input) - allowed:
         return "记忆参数包含未知字段；使用 name 标识记忆"
@@ -60,6 +62,8 @@ async def _read(context: ToolContext, tool_input: ToolInput) -> ToolResult:
 
 async def _update(context: ToolContext, tool_input: ToolInput) -> ToolResult:
     store = MemoryStore(context.project_root)
+    if tool_input["action"] == "rebuild_index":
+        return ToolResult(await asyncio.to_thread(store.rebuild_index))
     name = str(tool_input["name"])
     if tool_input["action"] == "forget":
         result = await asyncio.to_thread(store.forget, name)
@@ -96,20 +100,21 @@ def create_update_memory_tool() -> BaseTool:
     return BaseTool(
         tool_name="update_memory",
         tool_description=(
-            "记住或忘记长期记忆。同名更新；remember 必须提供 description、type、"
+            "记住或忘记长期记忆并更新索引。同名更新；remember 必须提供 name、description、type、"
             "content。只保存用户明确要求或确认、跨会话有用的信息，"
             "不存密钥、猜测、临时执行进度或项目指令中已有的内容。"
+            "手工编辑记忆文件或索引异常时，传 action=rebuild_index 重建索引，无需其他参数。"
         ),
         schema={
             "type": "object",
             "properties": {
-                "action": {"type": "string", "enum": ["remember", "forget"]},
+                "action": {"type": "string", "enum": ["remember", "forget", "rebuild_index"]},
                 "name": {"type": "string", "pattern": f"^{NAME_PATTERN}$"},
                 "description": {"type": "string", "maxLength": MAX_DESCRIPTION_CHARACTERS},
                 "type": {"type": "string", "enum": list(MEMORY_TYPES)},
                 "content": {"type": "string", "maxLength": MAX_ENTRY_CHARACTERS},
             },
-            "required": ["action", "name"],
+            "required": ["action"],
             "additionalProperties": False,
         },
         handler=_update,

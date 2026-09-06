@@ -67,12 +67,16 @@ class FakeLLMClient:
         # 后续仍要经过与真实模型完全相同的权限确认和工具执行链路。
         # 记忆命令仅用于 Fake 离线手测，真实模型使用自然语言决定工具参数。
         memory_command = latest_user_text.split(" ", 3)
-        if not is_compaction and memory_command[0] in {"/memory", "/remember", "/forget"}:
+        if not is_compaction and memory_command[0] in {
+            "/memory", "/remember", "/forget", "/memory-rebuild"
+        }:
             name = "read_memory" if memory_command[0] == "/memory" else "update_memory"
             memory_input: dict[str, object] = {}
             if name == "read_memory":
                 if len(memory_command) > 1:
                     memory_input["name"] = memory_command[1]
+            elif memory_command[0] == "/memory-rebuild":
+                memory_input = {"action": "rebuild_index"}
             elif memory_command[0] == "/forget":
                 memory_input = {"action": "forget",
                                 "name": memory_command[1] if len(memory_command) > 1 else ""}

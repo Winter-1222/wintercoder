@@ -114,3 +114,30 @@ def format_index(entries: list[MemoryMetadata]) -> str:
     if len(result) > MAX_INDEX_CHARACTERS:
         raise ValueError("记忆索引超过 16000 字符，请缩短描述或合并旧条目")
     return result
+
+
+def validate_index(index: str) -> None:
+    """只校验已读取的索引文本，不访问独立记忆文件。"""
+    error = "MEMORY.md 损坏或超出限制，请使用 rebuild_index 重建索引"
+    if len(index) > MAX_INDEX_CHARACTERS or not index.startswith(INDEX_HEADER):
+        raise ValueError(error)
+    if index == format_index([]):
+        return
+    entries = []
+    for line in index[len(INDEX_HEADER):].splitlines():
+        match = re.fullmatch(
+            rf"- \[({NAME_PATTERN})\]\(\1\.md\) · ([a-z]+)：(.+)（更新于 (.+)）", line
+        )
+        if match is None:
+            raise ValueError(error)
+        name, memory_type, escaped_description, updated_at = match.groups()
+        description = re.sub(r"\\(.)", r"\1", escaped_description)
+        try:
+            validate_metadata(name, description, memory_type)
+            if datetime.fromisoformat(updated_at).tzinfo is None:
+                raise ValueError("缺少时区")
+        except ValueError as cause:
+            raise ValueError(error) from cause
+        entries.append(MemoryMetadata(name, description, memory_type, updated_at))
+    if len({entry.name for entry in entries}) != len(entries) or format_index(entries) != index:
+        raise ValueError(error)

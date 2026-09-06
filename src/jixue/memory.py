@@ -7,14 +7,15 @@ from pathlib import Path
 from threading import RLock
 
 from jixue.memory_format import (
-    INDEX_HEADER,
     MAX_ENTRY_CHARACTERS,
+    MAX_INDEX_CHARACTERS,
     MAX_MEMORIES,
     MemoryMetadata,
     format_index,
     format_memory,
     read_metadata,
     validate_content,
+    validate_index,
     validate_metadata,
     validate_name,
 )
@@ -38,13 +39,13 @@ class MemoryStore:
             raise ValueError("记忆路径越过项目目录")
         return target
 
-    def _check_index_format(self) -> None:
+    def _check_legacy_index(self) -> None:
         path = self._path("MEMORY.md")
         if path.exists():
             with path.open(encoding="utf-8-sig") as stream:
-                if stream.readline().strip() != INDEX_HEADER.splitlines()[0]:
+                if stream.readline(128).strip() == "# 项目记忆":
                     raise ValueError(
-                        "检测到旧版或手写 MEMORY.md，未覆盖原文件；"
+                        "检测到旧版 MEMORY.md，未覆盖原文件；"
                         "请先备份并按四种类型整理成独立记忆文件"
                     )
 
@@ -61,10 +62,26 @@ class MemoryStore:
         return entries
 
     def index(self) -> str:
-        """只扫描文件头；读取不写盘，Plan 模式也不会隐式修改文件。"""
+        """任务开始只读磁盘索引；缺失或损坏时不隐式扫描、修复。"""
         with _MEMORY_LOCK:
-            self._check_index_format()
-            return format_index(self._metadata())
+            path = self._path("MEMORY.md")
+            if not path.parent.exists():
+                return format_index([])
+            if not path.exists():
+                raise ValueError("MEMORY.md 缺失，请使用 rebuild_index 重建索引")
+            self._check_legacy_index()
+            with path.open(encoding="utf-8-sig") as stream:
+                index = stream.read(MAX_INDEX_CHARACTERS + 1)
+            validate_index(index)
+            return index
+
+    def rebuild_index(self) -> str:
+        """手工编辑后显式扫描文件头，重新生成派生索引。"""
+        with _MEMORY_LOCK:
+            self._check_legacy_index()
+            index = format_index(self._metadata())
+            self._write(self._path("MEMORY.md"), index)
+            return "已从独立记忆文件的 YAML 头重建 MEMORY.md。"
 
     def read(self, name: str) -> str:
         """模型选定名称后才读取该条正文；文件头和正文分别限制大小。"""
@@ -86,7 +103,7 @@ class MemoryStore:
             name, description.strip(), memory_type, datetime.now(UTC).isoformat()
         )
         with _MEMORY_LOCK:
-            self._check_index_format()
+            self._check_legacy_index()
             entries = self._metadata(excluding=name) + [metadata]
             index = format_index(entries)
             path = self._path(f"{name}.md")
@@ -94,26 +111,35 @@ class MemoryStore:
                 # 不能借同名更新悄悄覆盖损坏或不属于本格式的文件。
                 with path.open(encoding="utf-8-sig") as stream:
                     read_metadata(stream, name)
+            self._invalidate_index()
             self._write(path, format_memory(metadata, content))
             return self._save_index(index, f"已记住 {name}（{memory_type}）：{description.strip()}")
 
     def forget(self, name: str) -> str:
         validate_name(name)
         with _MEMORY_LOCK:
-            self._check_index_format()
+            self._check_legacy_index()
             path = self._path(f"{name}.md")
             index = format_index(self._metadata(excluding=name))
             existed = path.exists()
+            self._invalidate_index()
             path.unlink(missing_ok=True)
             message = f"已忘记 {name}。" if existed else f"没有名为 {name} 的记忆。"
             return self._save_index(index, message)
 
+    def _invalidate_index(self) -> None:
+        # 正文和索引无法一起原子替换：先撤下旧索引，防止中断后仍加载过期内容。
+        path = self._path("MEMORY.md")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.unlink(missing_ok=True)
+
     def _save_index(self, index: str, message: str) -> str:
         try:
             self._write(self._path("MEMORY.md"), index)
-        except OSError:
-            # 正文才是数据源；索引失败不能假装正文也没保存或重新引入已删除条目。
-            return message + " 索引副本写入失败，下次读取将按文件头生成最新索引。"
+        except OSError as error:
+            raise ValueError(
+                message + " 正文变更已完成，但索引写入失败；请使用 rebuild_index 重建索引。"
+            ) from error
         return message
 
     def _write(self, path: Path, content: str) -> None:

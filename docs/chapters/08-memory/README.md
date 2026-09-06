@@ -3,7 +3,8 @@
 ## 当前成果与提交边界
 
 - 基础版本已提交：`7fd1768`，包含会话 JSONL、桌面新建/切换/恢复、项目指令和单文件记忆。
-- 本次完善：四种记忆类型、独立 Markdown 文件、程序生成索引、按需读取正文；单独保留为待审阅改动。
+- 四类记忆版本已提交：`27da642`，包含独立 Markdown 文件、程序生成索引和按需读取正文。
+- 本次仅完善索引维护：新任务直接读 MEMORY.md；写入时更新索引，手工编辑后显式重建。作为第八章独立完善提交，与第九章保持边界。
 - 主动保存仍由主模型调用工具完成；后台提取、小模型检索和完整记忆老化策略尚未实现。
 
 | 数据 | 保存位置 | 用途 |
@@ -12,7 +13,7 @@
 | 会话存档 | `.jixue/sessions/<id>.jsonl` | 界面事件 + 每轮结束后的工作消息快照 |
 | 当前会话 | `.jixue/sessions/current.txt` | 下次启动恢复哪个会话 |
 | 静态指令 | 根目录 `AGENTS.md` | 用户维护的项目约定 |
-| 动态记忆索引 | `.jixue/memory/MEMORY.md` | 元数据与正文链接的派生副本 |
+| 动态记忆索引 | `.jixue/memory/MEMORY.md` | 新任务直接加载的元数据与正文链接清单 |
 | 动态记忆正文 | `.jixue/memory/<name>.md` | 每条独立记忆的 YAML 头和详细内容 |
 | 工具大结果 | `.jixue/tool-results/` | `read_artifact` 按编号取回工具完整结果 |
 
@@ -25,8 +26,8 @@
 | `src/jixue/agent.py` | Agent 组装与任务分发；每个用户任务开始时刷新系统提示 |
 | `src/jixue/prompt.py`、`project_context.py` | 基础规则、根目录 AGENTS.md、动态记忆索引与使用规则 |
 | `src/jixue/memory_format.py` | 四种类型、元数据合同、YAML 解析、大小校验、正文和索引格式 |
-| `src/jixue/memory.py` | 扫描文件头、按名读取、同名更新/忘记、正文原子替换与索引生成 |
-| `src/jixue/tools/memory.py` | read_memory/update_memory 的 Schema、参数校验与执行函数 |
+| `src/jixue/memory.py` | 直接读索引、按名读正文、同名更新/忘记、写后更新索引和显式重建 |
+| `src/jixue/tools/memory.py` | read_memory/update_memory 的 Schema、校验与执行，包含 rebuild_index 操作 |
 | `src/jixue/sessions/codec.py`、`store.py` | 快照编解码、JSONL 追加、末尾半条记录处理和恢复 |
 | `src/jixue/bridge/sessions.py`、`application.py` | 会话切换组装、互斥、命令转发和任务开始/结束存盘 |
 | `src/jixue/llm/fake.py` | 用固定命令离线验证记忆工具链 |
@@ -102,18 +103,18 @@ stream = self._compactor.run_manual() if text == "/compact" else self._loop.run(
 return MemoryStore(project_root).index()
 ```
 
-索引来自当前独立文件的元数据：
+索引直接来自磁盘 MEMORY.md，关键读取代码如下：
 
 ```python
-def index(self) -> str:
-    with _MEMORY_LOCK:
-        self._check_index_format()
-        return format_index(self._metadata())
+with path.open(encoding="utf-8-sig") as stream:
+    index = stream.read(MAX_INDEX_CHARACTERS + 1)
+validate_index(index)
+return index
 ```
 
-`_metadata()` 逐个读取 YAML 头，遇到闭合的 `---` 即停止，不读取正文，也不假设头部一定少于 30 行。最多 100 条记忆、每份头部 4096 字符，索引最多 16000 字符。
+`validate_index()` 只检查这段文本的大小和格式，不打开独立记忆文件。整个读取路径不扫描文件头、不写盘。同一用户任务内的工具循环仍复用这份 system prompt；下个用户任务重新读磁盘索引。
 
-磁盘 MEMORY.md 是相同索引的派生副本，记忆写入后自动刷新。供模型使用的索引总是按当前文件头生成，避免手工编辑正文元数据后仍加载旧索引。纯读取不会写盘；手工编辑后，磁盘副本在下一次记忆更新时同步。
+首次使用、记忆目录还不存在时返回“尚无项目记忆”，不创建文件。目录已存在但 MEMORY.md 缺失，或索引损坏时，system prompt 中显示不可用提示，要求显式重建；不会把异常当成“没有记忆”。
 
 ### 3. 模型决定读哪条正文
 
@@ -154,24 +155,48 @@ return ToolResult(await asyncio.to_thread(store.index))
 }
 ```
 
-以上是 update_memory 的参数。remember 必须提供全部五个字段；forget 只需要 action 和 name。程序校验四种类型、名称、描述和正文长度，更新时间由程序生成，不能通过工具参数伪造。
+以上是 update_memory 的参数。remember 必须提供全部五个字段；forget 只需要 action 和 name；rebuild_index 只需要 action。程序校验四种类型、名称、描述和正文长度，更新时间由程序生成，不能通过工具参数伪造。
 
 `MemoryStore.remember()` 核心流程：
 
 ```python
 entries = self._metadata(excluding=name) + [metadata]
 index = format_index(entries)
+self._invalidate_index()
 self._write(path, format_memory(metadata, content))
 return self._save_index(index, message)
 ```
 
-相同 name 更新同一文件；先检查索引预算，再写正文，避免文件已经写入才发现容量不足。`_write()` 使用临时文件替换正式文件。
+相同 name 更新同一文件。先从其他文件头和本条新元数据生成目标索引、检查容量，再撤下旧索引、写正文、写新索引。这样不必在写入前后重复扫描，也能避免正文写完才发现索引超限。`_write()` 用临时文件替换正式文件。删除同样先计算剩余条目的索引，再撤下旧索引、删除正文、写新索引。
 
-读写由进程内锁串行协调，防止取消异步等待后，尚在运行的写盘线程与下一次操作交叉。正文与索引不是跨文件原子事务：正文是事实来源，索引副本失败会明确提示，下一次读取仍按文件头生成正确结果。
+读写由进程内锁串行协调，防止取消异步等待后，尚在运行的写盘线程与下一次操作交叉。正文和索引不是跨文件原子事务：撤下旧索引后若中断，保留磁盘上的实际正文状态，索引保持缺失。正文成功但索引写入失败会返回错误工具结果，明确说明“正文变更已完成”；下次读取提示重建，重启也不会加载过期索引。
 
 保存和忘记沿用原权限链：Plan 不提供且拒绝可写工具；Do 默认需要确认；拒绝不创建或修改文件。模型也可以主动请求保存，但是否值得长期记住依赖模型与用户确认，类型校验本身不能证明内容真实或有价值。
 
-### 5. 任务结束与下次使用
+### 5. 手工编辑后显式重建
+
+独立文件是数据源，MEMORY.md 由程序维护。手工修改文件头、添加或删除文件后，调用：
+
+```json
+{"action":"rebuild_index"}
+```
+
+这是 update_memory 的第三种操作，仍然经过 Plan/Do 和权限检查。Fake 手测入口为 `/memory-rebuild`。
+
+```python
+def rebuild_index(self) -> str:
+    with _MEMORY_LOCK:
+        self._check_legacy_index()
+        index = format_index(self._metadata())
+        self._write(self._path("MEMORY.md"), index)
+        return "已从独立记忆文件的 YAML 头重建 MEMORY.md。"
+```
+
+`_metadata()` 只读每条文件的 YAML 头，遇到闭合的 `---` 就停止，不加载正文。最多 100 条、单个头部 4096 字符、索引 16000 字符。任一头部损坏就报错，不跳过它生成残缺索引；修复文件后再重建。重建不修改独立正文，也不替用户更新 updated_at。
+
+例如：手工把 description 从“旧描述”改为“新描述”后，`/memory` 仍显示旧描述；允许 `/memory-rebuild` 后，`/memory` 和下个任务的 system prompt 才显示新描述。只改正文时，按名读取立即取得磁盘新正文；仍应手工更新 updated_at 并重建，通知后续任务该条已变化。
+
+### 6. 任务结束与下次使用
 
 ```text
 turn_started 落盘 → Agent 循环 → 最终回答
@@ -194,9 +219,11 @@ Fake 模式下按顺序手测；真实模型使用自然语言。Fake 命令只�
 2. 检查 MEMORY.md 只有描述和链接；commit_boundary.md 含 YAML 头、程序生成的更新时间和正文。
 3. 新建会话，发送 `/memory`，只看到索引；发送 `/memory commit_boundary`，才看到正文。
 4. Plan 下读取仍可执行，remember 不会写入；Do 下拒绝确认也不写入。
-5. 再次以同名 remember 更新，索引只有一条；`/forget commit_boundary` 获准后文件和索引条目消失。
-6. 关闭重启，检查会话与工具卡片恢复；旧确认按钮不能重新授权。
-7. 多轮长对话后 `/compact`，重启后模型恢复摘要快照，界面仍能显示旧记录。
+5. 手工修改 commit_boundary.md 的 description 和 updated_at，`/memory` 仍显示原索引。发送 `/memory-rebuild`，先拒绝一次，确认未变；再允许，确认描述更新。
+6. 再次以同名 remember 更新，索引只有一条；`/forget commit_boundary` 获准后文件和索引条目消失。
+7. 关闭重启，检查会话与工具卡片恢复；旧确认按钮不能重新授权。
+8. 在测试项目删除 MEMORY.md，发送 `/memory` 应提示缺失且不会自动生成；允许 `/memory-rebuild` 后恢复。
+9. 多轮长对话后 `/compact`，重启后模型恢复摘要快照，界面仍能显示旧记录。
 
 ```powershell
 conda run --no-capture-output -n mycoder python -m pytest
@@ -210,13 +237,13 @@ node tests/ui/ch08_electron.mjs
 
 本地测试覆盖索引/正文分离、按需读取、四种类型、字段和路径校验、头部超过 30 行、容量限制、同名更新、忘记、权限拒绝、Plan 只读、旧格式保护、索引写入失败与会话重启。专项 Electron 使用独立临时项目和 FakeLLM，不读取真实密钥。真实模型选择记忆与主动保存的质量仍需实际评估。
 
-本次验证结果：169 项 Python 测试、mypy（46 个源码文件）、ruff、Git 差异检查，以及真实 Electron 专项测试全部通过。专项桌面测试覆盖允许/拒绝、索引与正文分离、按需读取、工具卡片恢复、完整进程重启与忘记。
+本次验证通过：180 项 Python 测试、mypy（46 个源码文件）、ruff、Git 差异检查和真实 Electron 专项测试。覆盖读取不扫描或写盘、手工编辑后显式重建、缺失/损坏索引、写入或删除后的索引落盘失败，以及重建的允许/拒绝与 Plan 限制。桌面专项同时验证按需读取、会话切换、完整进程重启和忘记。
 
 ## 面试回答
 
 “我把持久上下文分成静态项目指令与动态记忆。静态指令由用户维护在根目录 AGENTS.md。动态记忆分 user、feedback、project、reference 四类，每条保存为带元数据的 Markdown 文件，程序生成 MEMORY.md 索引。
 
-每个用户任务开始只加载项目指令和有界索引；主模型根据描述判断相关性，通过工具读取需要的正文。保存、更新和忘记也走统一工具权限链，程序负责类型、路径、大小校验及文件替换。
+每个用户任务开始读取 AGENTS.md 和磁盘 MEMORY.md；主模型根据描述判断相关性，通过工具读取需要的正文。保存时机由主模型根据用户要求或已确认的长期信息决定，不是每轮结束自动提取。模型提出保存、更新或忘记请求，权限通过后由程序写独立文件并更新索引；手工改文件后则显式重建。程序负责类型、路径、大小校验及文件替换。
 
 会话恢复另用 JSONL，恢复压缩后的工作消息和界面记录。这样会话续接与跨会话记忆职责分开。目前没有后台提取代理或向量库，后续可以按需要加入任务结束后的结构化提取及检索排序。”
 
@@ -225,7 +252,8 @@ node tests/ui/ch08_electron.mjs
 - **四个示例文件也是索引吗？** 不是。只有 MEMORY.md 是索引；其他文件的头部用于生成索引，正文记录具体记忆。
 - **记忆为何调用工具？** 模型决定读/写什么，程序执行真正的文件操作。自动判断与工具执行可以同时存在。
 - **旧版单文件记忆怎么办？** 本项目升级前没有记忆数据。其他目录若检测到旧版 MEMORY.md，会报错并保留原文件；先将它备份到记忆目录外，按四类逐条整理，再通过新工具保存，不自动猜分类。
-- **能手工编辑吗？** 可以编辑独立文件，保持 name 与文件名一致、四种合法类型和有效 updated_at；修改事实时同步更新时间。不要直接维护派生 MEMORY.md。
+- **能手工编辑吗？** 可以编辑独立文件，保持 name 与文件名一致、四种合法类型和有效 updated_at；修改事实时同步更新时间。修改后调用 rebuild_index 更新索引，不要直接维护派生 MEMORY.md。
+- **索引坏了怎么办？** 新任务和 read_memory 只报告异常，不自动扫描。允许 update_memory 的 rebuild_index 操作后，从合法文件头重建。旧版单文件记忆仍保留原文，不直接覆盖。
 - **时间越新越可信吗？** updated_at 只是修改时间；没有实现自动事实核实、TTL 或统一遗忘机制。
 - **删除记忆后聊天中还出现？** 忘记删除的是持久记忆文件；历史聊天和已读入的上下文不会被抹掉。用户最新更正优先于旧内容。
 - **tool-results 还能删吗？** 当前会话可能引用它，仍需保留；完整工具大结果依赖 read_artifact 取回。
@@ -235,9 +263,9 @@ node tests/ui/ch08_electron.mjs
 ## 变更记录
 
 - `7fd1768` 提交会话与单文件项目记忆基础闭环，作为本次完善前的基线。
-- 动态记忆升级为四种类型、独立正文和元数据索引；正文按需进入工具结果。
-- 加入进程内读写协调、索引派生恢复、旧格式保护和有界头部读取。
-- 同步离线命令与桌面测试；本次完善保留未提交，方便单独审阅。
+- `27da642` 提交四种记忆类型、独立正文、元数据索引与按需读取版本。
+- 本次取消读取时扫描头部，改为直接读取 MEMORY.md；新增 rebuild_index 及 Fake 重建入口。
+- 写入前撤下旧索引，中断后显式重建，避免使用过期索引；同步本地测试与说明，作为第八章独立完善提交。
 
 ## 自测题与答案
 
@@ -246,5 +274,7 @@ node tests/ui/ch08_electron.mjs
 3. **谁做相关性判断？** 当前是主模型，程序只提供索引和受控读取，没有另一个小模型选择器。
 4. **“自己学”会修改模型参数吗？** 不会，修改的是外部文件和后续请求的上下文。
 5. **为什么只允许四种类型仍可能存错？** 类型是结构约束，不能替代事实核实与价值判断。
-6. **索引写入失败会丢记忆吗？** 正文保存成功后仍可从文件头生成索引，同时明确提示副本更新失败。
+6. **索引写入失败会丢记忆吗？** 已成功写入的正文保留，旧索引已撤下；读取提示不可用，允许 rebuild_index 后从当前文件头恢复。
 7. **压缩后是否永久禁止再次读取同一记忆？** 不禁止，正文被移出上下文后可以按需读取。
+
+8. **什么时候扫描 YAML 头？** 记忆新增、更新、删除时生成新索引，或显式重建时扫描；新任务读取索引时不扫描。

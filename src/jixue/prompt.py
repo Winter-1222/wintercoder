@@ -68,7 +68,9 @@ project 跨会话有用的项目阶段、期限和决策；reference 外部信�
 仍须遵守当前模式与权限。相同事实使用相同 name；description 简短说明内容和适用场景。
 不要保存猜测、临时执行进度、对话原文、密钥、令牌或 AGENTS.md 已有的规则。
 updated_at 是文件修改时间，不代表事实刚刚核实；涉及当前项目状态时应检查是否过时。
-记忆变更在下一个用户任务刷新索引；需要本轮最新索引时调用不带 name 的 read_memory。
+程序在记忆变更后更新 MEMORY.md；每个新任务直接读取该文件，不扫描独立记忆文件。
+手工编辑记忆文件后或索引缺失、损坏时，可调用 update_memory(action="rebuild_index") 重建，
+仍须遵守模式与权限。下一个任务加载更新后的索引；本轮需要时调用不带 name 的 read_memory。
 </memory-guide>
 <project-memory-index>
 {read_memory_context(project_root)}
