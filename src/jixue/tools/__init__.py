@@ -8,6 +8,7 @@ from jixue.tools.memory import create_read_memory_tool, create_update_memory_too
 from jixue.tools.read_artifact import create_read_artifact_tool
 from jixue.tools.read_file import create_read_file_tool
 from jixue.tools.registry import ToolRegistry
+from jixue.tools.skill import create_load_skill_tool
 from jixue.tools.write_tools import create_edit_file_tool, create_write_file_tool
 
 __all__ = [
@@ -21,6 +22,7 @@ __all__ = [
     "create_edit_file_tool",
     "create_glob_tool",
     "create_grep_tool",
+    "create_load_skill_tool",
     "create_read_artifact_tool",
     "create_read_file_tool",
     "create_read_memory_tool",

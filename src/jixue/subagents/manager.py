@@ -18,6 +18,7 @@ from jixue.memory import read_memory_context
 from jixue.permission import PermissionMode
 from jixue.project_context import read_project_instructions
 from jixue.sessions.codec import decode_conversation, encode_conversation
+from jixue.skills import build_skill_context
 from jixue.subagents.definitions import WORKER_RULES, load_definitions
 from jixue.subagents.runner import SubagentRun, drive_subagent
 from jixue.subagents.store import SubagentStore
@@ -221,6 +222,8 @@ class SubagentManager:
                     + await asyncio.to_thread(read_memory_context, self.root)
                     + "\n</project-memory-index>"
                 )
+                if any(t["name"] in {"load_skill", "read_file"} for t in definitions):
+                    system += await asyncio.to_thread(build_skill_context, self.root)
                 conversation = ConversationManager()
                 kind, role_name = "defined", definition.name
                 model_id, turns = definition.model, definition.max_turns

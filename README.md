@@ -2,7 +2,7 @@
 
 **一个面向本地代码项目的轻量桌面 Agent，让模型从「回答问题」走到「调用工具、完成任务」。**
 
-霁雪以简化版 Claude Code 为目标，逐步搭建工具循环、权限控制、上下文压缩、项目记忆和子 Agent 协作。项目用 Python 实现 Agent 核心，用 Electron + React 展示执行过程，适合学习、阅读源码和继续扩展。
+霁雪以简化版 Claude Code 为目标，逐步搭建工具循环、权限控制、上下文压缩、项目记忆、子 Agent 协作和渐进式技能加载。项目用 Python 实现 Agent 核心，用 Electron + React 展示执行过程，适合学习、阅读源码和继续扩展。
 
 **Python 3.12+ · Electron · React · TypeScript · MCP**
 
@@ -33,6 +33,7 @@
 | 长对话管理 | 大结果落盘、旧工具正文清理、对话摘要；支持 `/compact` 和自动压缩 |
 | 会话与记忆 | 保存、恢复和切换会话；加载项目约定，按需读取和维护四类项目记忆 |
 | 子 Agent | 定义式与 Fork 两种创建方式，支持前台等待、后台只读、状态查询、停止和存档续接 |
+| Skill 技能 | 发现项目技能简介，按需加载说明和参考资料、执行脚本；提供源码讲解与 Python AST 概览两个示例 |
 | 执行可见性 | 流式文字、可折叠工具卡片、独立权限确认、累计 Token 和耗时展示 |
 
 ## 核心设计
@@ -157,6 +158,7 @@ DEEPSEEK_API_KEY=你的Key
 | [agent_runtime/execution.py](src/jixue/agent_runtime/execution.py) | 权限、分批并发、异常保护与结果处理 |
 | [agent_runtime/compaction.py](src/jixue/agent_runtime/compaction.py) | 手动与自动压缩如何共用执行流程 |
 | [memory.py](src/jixue/memory.py) | 记忆正文与索引如何维护 |
+| [skills.py](src/jixue/skills.py) | 技能简介如何发现、正文如何按需进入上下文 |
 | [subagents/manager.py](src/jixue/subagents/manager.py) | 子任务如何创建、管理与续接 |
 | [bridge/sessions.py](src/jixue/bridge/sessions.py) | 会话恢复、切换与 Agent 工具绑定 |
 
@@ -183,7 +185,7 @@ npm run test:electron
 
 ## 章节文档
 
-当前已完成第 0 至第 9 章。每章包含成果、核心文件、执行链路、启动测试和自测题，适合按顺序学习。
+当前已完成第 0 至第 10 章。每章包含成果、核心文件、执行链路、启动测试和自测题，适合按顺序学习。
 
 | 章节 | 内容 |
 | --- | --- |
@@ -197,5 +199,6 @@ npm run test:electron
 | [第 7 章](docs/chapters/07-context/README.md) | 消息管理与三层上下文保护 |
 | [第 8 章](docs/chapters/08-memory/README.md) | 会话持久化与项目记忆 |
 | [第 9 章](docs/chapters/09-subagents/README.md) | 定义式与 Fork 子 Agent |
+| [第 10 章](docs/chapters/10-skills/README.md) | 渐进式 Skill 加载与两个完整示例 |
 
 后续规划见[开发路线](docs/ROADMAP.md)。

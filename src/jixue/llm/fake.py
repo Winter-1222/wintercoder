@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import shlex
 from collections.abc import AsyncIterator, Sequence
 from uuid import uuid4
 
@@ -38,6 +40,21 @@ class FakeLLMClient:
         latest_user_text = _without_system_reminder(latest_content)
         history_characters = sum(len(str(message.content)) for message in messages)
         is_compaction = "<jixue-compaction-request>" in latest_user_text
+
+        # 离线技能演示仍发出真实工具调用，沿用同一条权限与结果回传链。
+        skill_action = None if is_compaction else _skill_action(messages, tools)
+        if isinstance(skill_action, tuple):
+            name, arguments = skill_action
+            usage = Usage(max(1, history_characters // 4), 8)
+            yield LLMStreamEvent(
+                LLMEventType.TOOL_USE,
+                tool_use_id=f"fake_skill_{uuid4().hex}",
+                tool_name=name,
+                tool_input=arguments,
+            )
+            yield LLMStreamEvent(LLMEventType.USAGE, usage=usage)
+            yield LLMStreamEvent(LLMEventType.COMPLETE, usage=usage, stop_reason="tool_use")
+            return
 
         # 显式 JSON 入口用于离线验证子任务；真实模型自主选择 Agent 工具。
         if latest_user_text.startswith("/agent "):
@@ -194,6 +211,8 @@ class FakeLLMClient:
 8. 当前工作：按用户要求推进。
 9. 可能的下一步：读取近期原文。
 </summary>"""
+        elif isinstance(skill_action, str):
+            response = skill_action
         elif len(loop_paths) == 2 and loop_result_count >= 2:
             response = (
                 "## Agent Loop 完成\n\n"
@@ -249,6 +268,66 @@ class FakeLLMClient:
             usage=usage,
             stop_reason="end_turn",
         )
+
+
+def _skill_action(
+    messages: Sequence[APIMessage], tools: Sequence[ToolDefinition]
+) -> tuple[str, dict[str, object]] | str | None:
+    """只为两个随项目提供的技能预设步骤，不模拟模型的语义选择。"""
+
+    index = next(
+        (
+            i
+            for i in range(len(messages) - 1, -1, -1)
+            if messages[i].role == "user" and isinstance(messages[i].content, str)
+        ),
+        -1,
+    )
+    if index < 0:
+        return None
+    command = _without_system_reminder(messages[index].content)
+    if not command.startswith("/skill "):
+        return None
+    parts = command.split(maxsplit=2)
+    if len(parts) < 2:
+        return "离线技能用法：/skill 技能名称 可选目标路径"
+    name = parts[1]
+    results = [
+        block
+        for message in messages[index + 1 :]
+        if isinstance(message.content, tuple)
+        for block in message.content
+        if isinstance(block, APIToolResultBlock)
+    ]
+    if any(result.is_error for result in results):
+        return None
+    steps: list[tuple[str, dict[str, object]]] = [("load_skill", {"name": name})]
+    if name == "inspect-python":
+        target = parts[2] if len(parts) > 2 else "src/jixue"
+        quoted = "'" + target.replace("'", "''") + "'" if os.name == "nt" else shlex.quote(target)
+        steps += [
+            ("read_file", {"path": "skills/inspect-python/references/report-guide.md"}),
+            (
+                "bash",
+                {
+                    "command": "conda run --no-capture-output -n mycoder python "
+                    "skills/inspect-python/scripts/inspect_python.py --path " + quoted,
+                },
+            ),
+        ]
+    elif name == "explain-code" and len(parts) > 2:
+        steps.append(("read_file", {"path": parts[2]}))
+    if len(results) < len(steps):
+        step = steps[len(results)]
+        if any(tool.get("name") == step[0] for tool in tools):
+            return step
+        return f"当前模式或角色未提供 {step[0]} 工具，后续技能步骤尚未执行。"
+    return (
+        "离线技能演示完成：已按预设顺序执行 "
+        + " → ".join(step[0] for step in steps)
+        + "。实际内容见工具卡片。FakeLLM 不理解技能正文；"
+        "技能自动选择和按说明组织回答，需要真实模型验证。"
+    )
 
 
 def _without_system_reminder(content: object) -> str:

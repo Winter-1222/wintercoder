@@ -9,6 +9,7 @@ from pathlib import Path
 
 from jixue.memory import read_memory_context
 from jixue.project_context import read_project_instructions
+from jixue.skills import build_skill_context
 
 
 def build_system_prompt(project_root: Path) -> str:
@@ -74,7 +75,7 @@ updated_at 是文件修改时间，不代表事实刚刚核实；涉及当前项
 </memory-guide>
 <project-memory-index>
 {read_memory_context(project_root)}
-</project-memory-index>"""
+</project-memory-index>""" + build_skill_context(project_root)
 
 
 def build_system_reminder(

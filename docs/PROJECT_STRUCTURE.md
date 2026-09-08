@@ -11,6 +11,7 @@ myAgent/
 ├─ config/             模型、MCP 和 Markdown 子角色配置
 ├─ docs/               路线、目录说明和每章唯一的 README
 ├─ scripts/            本地检查脚本
+├─ skills/             项目可复用技能：说明、按需参考资料和脚本
 ├─ src/jixue/          Python 后端核心（agent.py 组装，agent_runtime/ 执行）
 ├─ tests/              本地测试，Git 忽略
 ├─ .jixue/             会话、项目记忆和工具大结果等运行数据，Git 忽略
@@ -33,7 +34,9 @@ myAgent/
 | `src/jixue/agent_runtime/control.py` | 运行状态、Plan/Do、权限模式、统一取消信号及一次性权限回复 |
 | `src/jixue/agent_runtime/events.py` | Agent 事件合同与公共事件构造，不持有会话或执行组件 |
 | `src/jixue/context.py` | 三层上下文策略：大结果落盘、成轮清理旧工具正文、摘要触发与资料文字转换；无独立活动状态 |
-| `src/jixue/prompt.py` | 拼装基础 System Prompt、项目指令和记忆，以及每轮模式、时间和 Git 动态提醒 |
+| `src/jixue/prompt.py` | 拼装基础 System Prompt、项目指令、记忆与技能目录，以及每轮模式、时间和 Git 动态提醒 |
+| `src/jixue/skills.py` | 发现技能元信息、校验入口、按需读正文和生成有界目录；不执行脚本 |
+| `src/jixue/tools/skill.py` | load_skill 只读工具；通过原有执行器加载 SKILL.md 正文 |
 | `src/jixue/project_context.py` | 有界读取根目录 AGENTS.md，拒绝指向项目外的路径 |
 | `src/jixue/memory.py` | 独立记忆存储、直接读磁盘索引、按需读正文、变更后更新索引与显式重建、进程内锁 |
 | `src/jixue/memory_format.py` | 四种记忆类型、frontmatter 合同、名称与大小校验、正文和索引格式、磁盘索引文本校验 |
@@ -42,7 +45,7 @@ myAgent/
 | `src/jixue/sessions/store.py` | JSONL 追加、最新快照恢复、UI 回放记录、半条尾部处理及会话列表 |
 | `src/jixue/subagents/__init__.py` | 子任务模块入口 |
 | `src/jixue/subagents/definitions.py` | 内置角色、Markdown/YAML 角色校验和提示词目录 |
-| `src/jixue/subagents/manager.py` | 两种创建路径、模型与能力选择、前后台管理、权限、通知和续接 |
+| `src/jixue/subagents/manager.py` | 两种创建路径、模型与能力选择、技能目录接入、前后台管理、权限、通知和续接 |
 | `src/jixue/subagents/runner.py` | 消费子任务事件，维护最终状态、报告、工具轨迹、用量及存档 |
 | `src/jixue/subagents/store.py` | 安全路径、有界快照、原子写入和恢复校验 |
 | `src/jixue/tools/subagent.py` | 唯一 Agent 工具的稳定 Schema 与参数校验 |
@@ -50,7 +53,7 @@ myAgent/
 | `src/jixue/domain/conversation.py` | 唯一工作消息序列，包含文字、工具块和摘要；负责协议转换、大小估算、原子替换及独立用量和轮次计数 |
 | `src/jixue/domain/events.py` | Electron 与 Python 之间的一行 JSON 信封 |
 | `src/jixue/llm/base.py` | 霁雪自己的 LLM 接口；统一接收 system、messages、tools 并输出流事件 |
-| `src/jixue/llm/fake.py` | 离线模拟 LLM；支持工具闭环、权限和摘要测试，工具 ID 在跨任务时保持唯一 |
+| `src/jixue/llm/fake.py` | 离线模拟 LLM；支持工具闭环、权限、摘要和 /skill 两种技能演示，工具 ID 在跨任务时保持唯一 |
 | `src/jixue/llm/config.py` | 从 `models.yaml` 和环境中生成四字段配置 |
 | `src/jixue/llm/adapters/anthropic_client.py` | 唯一接触 Anthropic SDK，翻译流事件；省略空 `tools`，并把供应商超长错误映射为稳定领域错误码 |
 | `src/jixue/mcp/client.py` | MCP transport 合同、stdio/HTTP 连接、`.env` URL 占位替换、握手、工具发现、限时调用；MCP SDK 只在这里出现 |
@@ -59,7 +62,7 @@ myAgent/
 | `src/jixue/bridge/bootstrap.py` | 读取项目根目录 `.env`，选择 Fake 或真实 LLM |
 | `src/jixue/bridge/application.py` | 命令互斥、会话命令、聊天事件转发和任务开始/结束存盘 |
 | `src/jixue/bridge/sessions.py` | 新建/切换/恢复会话并重新组装 Agent；共享工具注册表 |
-| `src/jixue/bridge/server.py` | 从 stdin 收 JSON、从 stdout 发 JSON；注册内置工具（含 `read_artifact`），并在后台连接和重试 MCP Server |
+| `src/jixue/bridge/server.py` | 从 stdin 收 JSON、从 stdout 发 JSON；注册内置工具（含 `read_artifact`、`load_skill`），并在后台连接和重试 MCP Server |
 | `src/jixue/bridge/__main__.py` | 让 `python -m jixue.bridge` 能启动 |
 | `src/jixue/tools/base.py` | 工具合同、ToolResult 和通用 BaseTool |
 | `src/jixue/tools/registry.py` | 注册、启用、禁用、按名称执行工具，并可只导出只读工具定义 |
@@ -68,7 +71,7 @@ myAgent/
 | `src/jixue/tools/glob.py` | 按 glob 模式查找项目内文件路径，跳过密钥和 `.jixue` |
 | `src/jixue/tools/grep.py` | 在项目文本文件中搜索字面内容并返回行号，跳过密钥和 `.jixue` |
 | `src/jixue/tools/write_tools.py` | write_file 整体写入文件；edit_file 只替换唯一匹配的文字 |
-| `src/jixue/tools/bash.py` | 在项目根目录执行 PowerShell/Bash，限制时长并移除常见密钥环境变量；完整输出交给统一的上下文保护 |
+| `src/jixue/tools/bash.py` | 在项目根目录执行 PowerShell/Bash，隔离 Bridge 输入管道、限制时长并移除常见密钥环境变量；完整输出交给统一的上下文保护 |
 | `src/jixue/tools/memory.py` | read_memory 按需读索引或指定正文、update_memory 四类记忆更新/忘记及 rebuild_index 重建索引；沿用模式和权限链 |
 | `src/jixue/tools/__init__.py` | 工具层公开导入入口 |
 
@@ -113,6 +116,11 @@ myAgent/
 | `docs/chapters/07-context/README.md` | 第七章统一 messages、三层上下文保护、Claude Code 公开机制对照及启动和测试说明 |
 | `docs/chapters/08-memory/README.md` | 会话恢复/切换、项目指令、记忆工具、全链路核心代码和手测 |
 | `docs/chapters/09-subagents/README.md` | 子任务全部链路、核心代码、手测、限制与自测题 |
+| `docs/chapters/10-skills/README.md` | 技能三层加载、两个示例、全链路、手测与面试场景题 |
+| `skills/explain-code/SKILL.md` | 纯说明技能：面向初学者解释代码入口与调用链 |
+| `skills/inspect-python/SKILL.md` | 复杂技能入口：按需读取统计口径，再请求执行 AST 脚本 |
+| `skills/inspect-python/references/report-guide.md` | Python 概览统计字段、范围限制和推断边界 |
+| `skills/inspect-python/scripts/inspect_python.py` | 项目内 Python AST 静态统计脚本，无第三方依赖、不执行目标代码 |
 | `scripts/test-all.ps1` | 顺序执行本地自动化检查 |
 
 本地 `tests/mcp/demo_server.py` 和 `demo_http_server.py` 分别模拟 stdio 与 HTTP
@@ -126,3 +134,5 @@ Server；对应测试覆盖两条真实闭环。每章目录只允许有一个 `
 `.jixue/sessions/<id>.jsonl` 保存界面事件和工作消息快照，`current.txt` 保存当前会话编号。`.jixue/memory/MEMORY.md` 保存新任务直接读取的元数据索引，记忆变更或显式重建时更新，`<name>.md` 保存含 YAML 头的独立记忆正文；它们都属于本地运行数据，不进入 Git。第八章本地专项桌面测试为 `tests/ui/ch08_electron.mjs`。
 
 `.jixue/subagents/<session_id>/<agent_id>.json` 保存可续接子对话、模型与权限边界、报告和工具轨迹；运行中断后不自动重跑。第九章本地专项测试是 `tests/test_subagents.py` 与 `tests/ui/ch09_electron.mjs`；`tests/test_review_subagent_edges.py` 覆盖控制命令通知隔离、新旧中断检查点和连续续接记账。
+
+第十章本地专项测试为 `tests/test_skills.py` 和 `tests/ui/ch10_electron.mjs`，验证渐进式请求、权限和示例脚本；测试文件由 Git 忽略。`skills/` 是可提交的技能源码，不保存用户对话或运行结果。

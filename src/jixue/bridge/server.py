@@ -32,6 +32,7 @@ from jixue.tools import (
     create_edit_file_tool,
     create_glob_tool,
     create_grep_tool,
+    create_load_skill_tool,
     create_read_artifact_tool,
     create_read_file_tool,
     create_read_memory_tool,
@@ -127,6 +128,7 @@ def main() -> None:
     tools.register(create_edit_file_tool())
     tools.register(create_bash_tool())
     tools.register(create_read_memory_tool())
+    tools.register(create_load_skill_tool())
     tools.register(create_update_memory_tool())
     try:
         llm = create_runtime_llm(project_root)

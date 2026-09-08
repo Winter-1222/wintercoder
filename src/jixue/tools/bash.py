@@ -41,6 +41,8 @@ def create_bash_tool() -> BaseTool:
             *program,
             cwd=context.project_root.resolve(),
             env=environment,
+            # Bridge 的 stdin 是桌面命令管道，子命令不能继承或争抢它。
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
