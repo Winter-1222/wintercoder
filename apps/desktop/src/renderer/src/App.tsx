@@ -178,6 +178,7 @@ export default function App(): React.JSX.Element {
     } else if (event.type === 'tool_result') {
       dispatch({
         type: 'tool_completed',
+        executionState: text(object(event.payload.metadata).execution_state),
         requestId: event.request_id,
         toolUseId: text(event.payload.id, `tool_${event.request_id}`),
         content: text(event.payload.content, '工具没有返回文本'),
@@ -197,7 +198,8 @@ export default function App(): React.JSX.Element {
         durationMs: number(event.payload.duration_ms),
         model: text(event.payload.model, state.model),
         isError: event.payload.is_error === true,
-        cancelled: event.payload.cancelled === true
+        cancelled: event.payload.cancelled === true,
+        incomplete: event.payload.incomplete === true
       })
     } else if (event.type === 'error') {
       if (event.payload.scope === 'storage') setSessionError(text(event.payload.message))

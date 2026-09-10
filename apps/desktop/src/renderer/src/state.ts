@@ -15,7 +15,7 @@ export interface UiMessage {
   requestId: string
   role: 'user' | 'assistant' | 'tool'
   content: string
-  status: 'streaming' | 'complete' | 'failed' | 'cancelled'
+  status: 'streaming' | 'complete' | 'failed' | 'cancelled' | 'incomplete'
   name?: string
   input?: string
   durationMs?: number
@@ -83,6 +83,7 @@ export type ChatAction =
     }
   | {
       type: 'tool_completed'
+      executionState?: string
       requestId: string
       toolUseId: string
       content: string
@@ -98,6 +99,7 @@ export type ChatAction =
       model: string
       isError: boolean
       cancelled: boolean
+      incomplete?: boolean
     }
   | { type: 'request_failed'; requestId: string; message: string }
 
@@ -327,7 +329,9 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
                 ...message,
                 content: action.content,
                 durationMs: action.durationMs,
-                status: action.isError ? 'failed' : 'complete'
+                status: action.executionState === 'unknown' ? 'incomplete'
+                  : action.executionState === 'not_started' ? 'cancelled'
+                    : action.isError ? 'failed' : 'complete'
               }
             : message
         )
@@ -354,12 +358,14 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         model: action.model,
         messages: updateAssistant(state.messages, action.requestId, (message) => ({
           ...message,
-          status: action.cancelled ? 'cancelled' : action.isError ? 'failed' : 'complete'
+          status: action.cancelled ? 'cancelled'
+            : action.incomplete ? 'incomplete'
+              : action.isError ? 'failed' : 'complete'
         })).filter(
           (message) =>
             message.requestId !== action.requestId ||
             message.role !== 'assistant' ||
-            action.cancelled ||
+            action.cancelled || action.incomplete ||
             message.content.length > 0
         )
       }

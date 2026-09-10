@@ -20,11 +20,13 @@ export function MessageView({
           ? '正在提交'
           : message.status === 'streaming'
             ? '工具执行中'
-            : message.status === 'failed'
-              ? '工具失败'
-              : message.status === 'cancelled'
-                ? '工具已停止'
-                : '工具完成'
+            : message.status === 'incomplete'
+              ? '结果未知'
+              : message.status === 'failed'
+                ? '工具失败'
+                : message.status === 'cancelled'
+                  ? '工具已停止'
+                  : '工具完成'
     const showPermission =
       message.status === 'streaming' &&
       (message.permissionStatus === 'pending' || permissionBusy)
@@ -98,9 +100,11 @@ export function MessageView({
               ? '已停止'
               : message.status === 'failed'
                 ? '回复中断'
-                : complete
-                  ? '已完成'
-                  : '正在回复'}
+                : message.status === 'incomplete'
+                  ? '未完成'
+                  : complete
+                    ? '已完成'
+                    : '正在回复'}
           </small>
         </header>
         <div className="message-body">

@@ -8,7 +8,6 @@ from enum import StrEnum
 from time import perf_counter
 
 from jixue.domain.conversation import Usage
-from jixue.llm.base import LLMStreamEvent
 
 
 class AgentMode(StrEnum):
@@ -55,20 +54,6 @@ def error_event(code: str, message: str, *, retryable: bool = False) -> AgentEve
     )
 
 
-def cancelled_tool_event(call: LLMStreamEvent) -> AgentEvent:
-    """关闭尚未执行的工具卡片，避免取消后一直显示“执行中”。"""
-
-    return event(
-        AgentEventType.TOOL_RESULT,
-        id=call.tool_use_id,
-        name=call.tool_name,
-        content="用户已停止任务，工具已中断或不再等待结果",
-        is_error=True,
-        duration_ms=0,
-        metadata={},
-    )
-
-
 def usage_payload(usage: Usage) -> dict[str, int]:
     return {
         "input_tokens": usage.input_tokens,
@@ -103,6 +88,7 @@ def loop_complete(
     turn_index: int,
     is_error: bool = False,
     cancelled: bool = False,
+    incomplete: bool = False,
 ) -> AgentEvent:
     """统一任务结束事件，普通任务和压缩命令都能让 UI 正常解锁。"""
 
@@ -116,5 +102,6 @@ def loop_complete(
         message_id=message_id,
         is_error=is_error,
         cancelled=cancelled,
+        incomplete=incomplete,
         mode=mode.value,
     )

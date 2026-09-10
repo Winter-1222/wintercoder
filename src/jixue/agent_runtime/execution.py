@@ -12,7 +12,6 @@ from jixue.agent_runtime.events import (
     AgentEvent,
     AgentEventType,
     AgentMode,
-    cancelled_tool_event,
     event,
 )
 from jixue.context import ToolResultStore
@@ -89,68 +88,77 @@ class ToolExecutor:
         """执行已经通过权限检查的工具；确认等待时间不计入工具耗时。"""
 
         started_at = perf_counter()
-        result = await self._tools.execute(
-            call.tool_name,
-            replace(self._tool_context, tool_use_id=call.tool_use_id),
-            call.tool_input,
-        )
-        result = await self._tool_result_store.prepare(
-            call.tool_use_id,
-            call.tool_name,
-            result,
-        )
+        try:
+            result = await self._tools.execute(
+                call.tool_name,
+                replace(self._tool_context, tool_use_id=call.tool_use_id),
+                call.tool_input,
+            )
+            result = await self._tool_result_store.prepare(
+                call.tool_use_id, call.tool_name, result,
+            )
+        except Exception as error:
+            # 工具内部异常也要成为配对结果；异常前可能已有副作用，不能宣称未执行。
+            result = ToolResult(
+                f"工具执行异常（{type(error).__name__}），结果未知；请先核对实际状态。",
+                is_error=True,
+                metadata={"execution_state": "unknown"},
+            )
         duration_ms = round((perf_counter() - started_at) * 1000)
         return result, duration_ms
 
     async def _execute_tool_batch(
         self,
         calls: Sequence[LLMStreamEvent],
-    ) -> list[tuple[ToolResult, int]] | None:
-        """等待一批工具；用户取消时立即放弃等待并让 Agent 收尾。"""
+    ) -> list[tuple[ToolResult, int] | None]:
+        """停止只中断未完成的等待，已经拿到的并发结果仍按原顺序返回。"""
 
         if not calls:
             return []
+        tasks = [asyncio.create_task(self._execute_tool_call(call)) for call in calls]
 
-        async def execute_all() -> list[tuple[ToolResult, int]]:
-            return list(await asyncio.gather(*(self._execute_tool_call(call) for call in calls)))
+        async def execute_all() -> None:
+            await asyncio.gather(*tasks)
 
         execution = asyncio.create_task(execute_all())
         cancel_wait = asyncio.create_task(self._control.cancel_event.wait())
         try:
-            done, _ = await asyncio.wait(
-                (execution, cancel_wait),
-                return_when=asyncio.FIRST_COMPLETED,
-            )
+            await asyncio.wait((execution, cancel_wait), return_when=asyncio.FIRST_COMPLETED)
+            # 先读取已完成项，再取消剩余任务；两者同时就绪时不能覆盖真实成功结果。
+            completed = [task.result() if task.done() and not task.cancelled() else None
+                         for task in tasks]
         except asyncio.CancelledError:
             cancel_in_background(execution)
-            cancel_in_background(cancel_wait)
             raise
-        if cancel_wait in done:
-            # 工具可能正在等待远程 HTTP；不再让这次等待占住后续聊天。
-            cancel_in_background(execution)
-            return None
-
-        cancel_wait.cancel()
-        await asyncio.gather(cancel_wait, return_exceptions=True)
-        return execution.result()
+        finally:
+            cancel_wait.cancel()
+            await asyncio.gather(cancel_wait, return_exceptions=True)
+        # 远程调用或线程可能延迟响应取消，后续只能把它们标为结果未知。
+        cancel_in_background(execution)
+        return completed
 
     async def execute(
         self,
         calls: Sequence[LLMStreamEvent],
         result: ToolRound,
     ) -> AsyncIterator[AgentEvent]:
-        """一轮工具全部结束后，循环才把调用和结果一起写入会话。"""
+        """每个调用都得到一个结果，包括已完成、未启动和停止后结果未知的调用。"""
 
-        pending = list(calls)
         for batch in partition_tool_calls(calls, self._tools):
-            if self._control.cancel_event.is_set():
-                break
             executions: list[tuple[ToolResult, int] | None] = [None] * len(batch)
             ready: list[tuple[int, LLMStreamEvent]] = []
+            started: set[int] = set()
             for index, call in enumerate(batch):
-                check = self._check_tool_call(
-                    call, self._control.mode, self._control.permission_mode
-                )
+                if self._control.cancel_event.is_set():
+                    result.stop_reason = "cancelled"
+                if result.stop_reason:
+                    break
+                try:
+                    check = self._check_tool_call(
+                        call, self._control.mode, self._control.permission_mode
+                    )
+                except Exception:
+                    check = ToolResult("工具检查异常，工具未执行。", is_error=True)
                 if isinstance(check, ToolResult):
                     executions[index] = (check, 0)
                     continue
@@ -174,28 +182,44 @@ class ToolExecutor:
                     finally:
                         self._control.clear_permission()
                     if self._control.cancel_event.is_set():
+                        result.stop_reason = "cancelled"
                         break
                     if not allowed:
                         executions[index] = (ToolResult("用户拒绝了本次工具调用", is_error=True), 0)
                         continue
                 ready.append((index, call))
+            if not result.stop_reason and not self._control.cancel_event.is_set():
+                started = {index for index, _ in ready}
+                completed = await self._execute_tool_batch([call for _, call in ready])
+                for (index, _), completed_execution in zip(ready, completed, strict=True):
+                    executions[index] = completed_execution
             if self._control.cancel_event.is_set():
-                break
-            completed = await self._execute_tool_batch([call for _, call in ready])
-            if completed is None:
-                break
-            for (index, _), completed_execution in zip(ready, completed, strict=True):
-                executions[index] = completed_execution
-            for call, execution in zip(batch, executions, strict=True):
+                result.stop_reason = "cancelled"
+            for index, (call, execution) in enumerate(zip(batch, executions, strict=True)):
                 if execution is None:
-                    raise RuntimeError("工具批次存在未处理的调用")
-                tool_result, duration_ms = execution
-                invalid = not call.tool_error and self._tools.get(call.tool_name) is None
-                result.consecutive_invalid = result.consecutive_invalid + 1 if invalid else 0
+                    if index in started:
+                        content = "工具已启动，但停止等待时未取得结果；结果未知，请先核对实际状态。"
+                        execution_state = "unknown"
+                    else:
+                        content = (
+                            "用户已停止任务，工具未执行。"
+                            if result.stop_reason == "cancelled"
+                            else "连续异常工具请求过多，工具未执行。"
+                        )
+                        execution_state = "not_started"
+                    tool_result = ToolResult(
+                        content, is_error=True, metadata={"execution_state": execution_state}
+                    )
+                    duration_ms = 0
+                else:
+                    tool_result, duration_ms = execution
+                    invalid = not call.tool_error and self._tools.get(call.tool_name) is None
+                    result.consecutive_invalid = result.consecutive_invalid + 1 if invalid else 0
+                    if result.consecutive_invalid >= INVALID_TOOL_LIMIT:
+                        result.stop_reason = "invalid_tool_limit"
                 result.results.append(
                     APIToolResultBlock(call.tool_use_id, tool_result.content, tool_result.is_error)
                 )
-                pending.remove(call)
                 yield event(
                     AgentEventType.TOOL_RESULT,
                     id=call.tool_use_id,
@@ -205,15 +229,6 @@ class ToolExecutor:
                     duration_ms=duration_ms,
                     metadata=dict(tool_result.metadata),
                 )
-                if result.consecutive_invalid >= INVALID_TOOL_LIMIT:
-                    result.stop_reason = "invalid_tool_limit"
-                    for item in pending:
-                        yield unexecuted_tool_event(item, "连续异常工具请求过多，工具未执行")
-                    return
-        if self._control.cancel_event.is_set():
-            result.stop_reason = "cancelled"
-            for item in pending:
-                yield cancelled_tool_event(item)
 
 
 def partition_tool_calls(
@@ -252,5 +267,5 @@ def unexecuted_tool_event(call: LLMStreamEvent, reason: str) -> AgentEvent:
         content=reason,
         is_error=True,
         duration_ms=0,
-        metadata={},
+        metadata={"execution_state": "not_started"},
     )

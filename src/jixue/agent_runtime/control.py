@@ -37,7 +37,7 @@ class RunControl:
         self._accepts_cancel = False
 
     def close_cancellation(self) -> None:
-        """摘要已提交时关闭停止入口，但收尾事件发完前仍占用当前任务。"""
+        """任务结束状态已确定时关闭停止入口，收尾事件发完前仍占用当前任务。"""
 
         self._accepts_cancel = False
 

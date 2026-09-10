@@ -13,10 +13,11 @@ type Role = Literal["user", "assistant"]
 
 
 class MessageStatus(StrEnum):
-    """内部消息状态；只有 complete 会发送给 LLM。"""
+    """消息结束状态；流式草稿不发送，中断内容附上状态说明后供后续续接。"""
 
     STREAMING = "streaming"
     COMPLETE = "complete"
+    INCOMPLETE = "incomplete"
     FAILED = "failed"
     CANCELLED = "cancelled"
 
@@ -132,7 +133,8 @@ class ConversationManager:
     ) -> None:
         self._messages.append(Message("assistant", content, status, usage=usage or Usage()))
         self.record_usage(usage or Usage())
-        if status is MessageStatus.COMPLETE:
+        # 累计已结束的用户轮；停止或失败也占一轮，不能复用界面轮号。
+        if status is not MessageStatus.STREAMING:
             self.completed_turns += 1
 
     def add_tool_round(
@@ -155,15 +157,6 @@ class ConversationManager:
             )
         )
 
-    def cancel_last_user(self) -> None:
-        """取消当前任务的全部消息，包括已经完成的工具轮。"""
-
-        for index in range(len(self._messages) - 1, -1, -1):
-            message = self._messages[index]
-            self._messages[index] = replace(message, status=MessageStatus.CANCELLED)
-            if message.role == "user" and isinstance(message.content, str):
-                break
-
     def clear_tool_results(self, contents: Mapping[str, str]) -> None:
         """只替换工具结果正文，调用 ID、错误标记和消息位置保持不变。"""
 
@@ -180,7 +173,7 @@ class ConversationManager:
                 self._messages[index] = replace(message, content=blocks)
 
     def to_api_format(self, *, merge_text: bool = True) -> list[APIMessage]:
-        """仅做协议转换和未完成消息过滤，不再承担上下文管理。"""
+        """转换协议并标明中断状态，不删除已经发生的用户输入和工具事实。"""
 
         return _to_api_messages(self._messages, merge_text=merge_text)
 
@@ -188,7 +181,7 @@ class ConversationManager:
         self,
         keep_recent_turns: int = 2,
     ) -> tuple[list[APIMessage], int, int] | None:
-        """摘要只覆盖完整旧任务；工具轮属于所在任务，不能被边界拆开。"""
+        """摘要只覆盖已结束的旧用户轮；工具调用和结果不能被边界拆开。"""
 
         if keep_recent_turns < 1:
             raise ValueError("至少保留 1 个最近对话轮")
@@ -225,8 +218,12 @@ def _to_api_messages(messages: Sequence[Message], *, merge_text: bool = True) ->
 
     result: list[APIMessage] = []
     for message in messages:
+        if message.status is MessageStatus.STREAMING:
+            continue
         content = message.content.strip() if isinstance(message.content, str) else message.content
-        if message.status is not MessageStatus.COMPLETE or not content:
+        if message.role == "assistant" and isinstance(content, str):
+            content = _with_interruption_notice(content, message.status)
+        if not content:
             continue
         if (
             merge_text
@@ -246,25 +243,46 @@ def _to_api_messages(messages: Sequence[Message], *, merge_text: bool = True) ->
 
 
 def _complete_turn_starts(messages: Sequence[Message]) -> list[int]:
-    """普通 user 开始任务，普通 assistant 完成任务；中途的工具块不另算轮次。"""
+    """普通 user 开始一轮，终态 assistant 结束一轮；停止不等于任务成功。"""
 
     starts: list[int] = []
     start: int | None = None
     for index, message in enumerate(messages):
         if (
             message.is_summary
-            or message.status is not MessageStatus.COMPLETE
+            or message.status is MessageStatus.STREAMING
             or not isinstance(message.content, str)
-            or not message.content.strip()
         ):
             continue
         if message.role == "user":
-            if start is None:
+            if start is None and message.content.strip():
                 start = index
-        elif start is not None:
+        elif start is not None and (
+            message.content.strip() or message.status is not MessageStatus.COMPLETE
+        ):
             starts.append(start)
             start = None
     return starts
+
+
+def _with_interruption_notice(content: str, status: MessageStatus) -> str:
+    """保留部分输出，但明确它不是完整答复；说明只在协议转换时生成。"""
+
+    reasons = {
+        MessageStatus.CANCELLED: "用户已停止本次任务",
+        MessageStatus.INCOMPLETE: "本次响应未完整结束",
+        MessageStatus.FAILED: "本次响应因错误中断",
+    }
+    reason = reasons.get(status)
+    if reason is None:
+        return content
+    notice = (
+        f"<system-reminder>\n{reason}，不能据此认定任务已完成。"
+        "已记录的工具结果仍然有效；对结果未知的操作先核对实际状态，"
+        "不要盲目重复已经成功的操作。根据用户下一条消息继续或调整任务。\n"
+        "</system-reminder>"
+    )
+    return f"{content}\n\n{notice}" if content else notice
 
 
 def _summary_reminder(summary: str) -> str:

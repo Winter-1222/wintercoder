@@ -26,7 +26,7 @@ class ModelResponse:
     blocks: list[APIContentBlock] = field(default_factory=list)
     calls: list[LLMStreamEvent] = field(default_factory=list)
     usage: Usage = field(default_factory=Usage)
-    stop_reason: str = "end_turn"
+    stop_reason: str = "stream_incomplete"
     event_received: bool = False
 
     @property
@@ -139,7 +139,8 @@ class ModelStream:
                     cumulative=usage_payload(add_usage(conversation_usage, current_usage)),
                 )
             elif item.type is LLMEventType.COMPLETE:
-                response.stop_reason = item.stop_reason or "end_turn"
+                # 没有明确结束原因时不能假定成功，也不能执行可能只生成了一半的调用。
+                response.stop_reason = item.stop_reason or "unknown"
 
 
 def _append_text(blocks: list[APIContentBlock], text: str) -> None:
