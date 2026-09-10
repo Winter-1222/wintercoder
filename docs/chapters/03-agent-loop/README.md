@@ -41,8 +41,8 @@ self._loop = AgentLoop(...)  # 显式传入上面组装的组件
 用户输入 → chat.send → Agent.run
   ├─ /compact → ContextCompactor.run_manual
   └─ 普通任务 → AgentLoop.run
-       → 会话加入 user
-       → ContextCompactor.request_messages 清理旧工具正文并附动态提醒
+       → 会话保存原问题，再生成一次动态提醒并紧接着保存
+       → ContextCompactor.request_messages 清理旧工具正文、转换包含历史提醒的协议消息
        → 超过预算时运行摘要事务
        → ModelStream.respond：模型流转成 stream_text / tool_use / usage
        → turn_complete
@@ -77,7 +77,7 @@ Plan 有两道限制：循环只导出只读工具定义，执行器仍会在真
 
 1. 等待“已停止”或“未完成”，在同一个会话发送“继续”，也可以补充修改后的要求。
 2. Bridge 收到新的 `chat.send`，`Agent.run()` 为本轮新建取消信号和循环额度，沿用原 `ConversationManager`。
-3. 工作消息追加新输入；请求模型时会带上原问题、已执行结果、部分回复及客户端生成的中断说明。
+3. 工作消息追加新输入和本任务提醒；请求模型时会带上原问题、历史提醒、已执行结果、部分回复及客户端生成的中断说明。
 4. 模型据此决定下一步，新的工具调用仍经过原有权限链。续接会发起新请求，不会恢复上一条 Python `await` 或自动重新执行旧工具。
 
 `to_api_format()` 只过滤仍在生成的草稿；已停止、失败和未完成的文字附上状态说明。已经随工具轮保存的过程文字不重复追加。累计轮号统计已结束的用户轮，包括停止和失败；摘要按这些结束边界保留最近两轮。

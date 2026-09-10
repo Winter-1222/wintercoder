@@ -1,194 +1,126 @@
-# 第 4 章：System Prompt
-
-本章只做一件事：让模型每次都清楚“我是谁、怎样工作、当前环境是什么”，同时把这些信息放进 API 的正确位置。
+# 第 4 章：System Prompt 与动态提醒
 
 ## 当前成果
 
-- `system` 中有稳定的角色、行为、工具、代码、安全、模式和输出规则。
-- 工作目录和操作系统也放在 `system`，一次会话中保持不变。
-- 当前时间、Git 状态、Plan/Do 模式放在每轮临时 `<system-reminder>` 中。
-- `AnthropicLLMClient` 正式接收并发送 `system` 参数。
-- 第八章接入后，在每个用户任务开始时刷新项目指令和记忆；同一任务的工具循环内前缀保持稳定，时间与 Git 状态仍单独放在动态提醒。
-- 外部文件内容不会被包装成 system reminder，降低提示注入伪装成系统指令的风险。
-- reminder 只存在于发给模型的消息副本，不会污染聊天记录。
+请求分成 `system`、`messages`、`tools` 三部分。基础规则和项目资料放在 `system`；用户问题、客户端提醒、模型回复和工具结果进入工作消息；工具定义由注册中心导出。
 
-## 推荐阅读顺序
+动态提醒是**任务开始时的状态快照**，包含 Plan/Do、权限模式、时间和 Git 变更数量。每个普通用户任务生成一次并追加到 `ConversationManager`；同一任务内的多次模型请求复用它。后续任务保留旧提醒，再追加新提醒。提醒正文说明：后续任务以新提醒为准，执行期间以工具结果为准。
 
-按下面顺序读，先不要从 SDK 文件开始：
+页面只显示原始用户输入及 Agent 事件；持久化分别保存界面回放记录和工作消息快照，因此保存提醒不会把它显示成用户聊天气泡。
 
-1. `src/jixue/prompt.py`：看两种提示上下文怎样生成。
-2. `src/jixue/agent.py`：看固定提示词怎样交给 `ModelStream`；动态提醒在 `agent_runtime/loop.py` 生成，在 `compaction.py` 的 `request_messages()` 附入请求。
-3. `src/jixue/llm/base.py`：看供应商无关的 `stream(..., system=...)` 合同。
-4. `src/jixue/llm/adapters/anthropic_client.py`：看最后怎样调用 SDK。
-5. `src/jixue/domain/conversation.py`：复习原始对话怎样清洗成 API 历史。
+## 核心文件
 
-只读前两个文件，就能理解本章的大部分逻辑。
-
-## 三类内容放在哪里
-
-Anthropic 协议的一次请求可以简单理解成：
-
-| 请求字段 | 放什么 | 为什么 |
-| --- | --- | --- |
-| `system` | 七段固定规则、工作目录、操作系统 | 稳定、优先级高，适合缓存 |
-| `messages` | 对话历史、工具结果、本轮动态 reminder | 会随对话和环境变化 |
-| `tools` | 当前启用工具的名称、描述、JSON Schema | 由注册中心统一生成 |
-
-项目指令和长期记忆已在第八章接入，详见[第八章](../08-memory/README.md)；本章主要解释基础提示词与动态提醒。
-
-## 一条消息怎样跑起来
-
-假设用户在 Do 模式发送“读取 README 并总结”：
-
-```text
-用户点击发送
-  → Electron 发送 chat.send
-  → BridgeApplication 调用 Agent.run("读取 README 并总结")
-  → ConversationManager 保存用户原话
-  → build_system_reminder() 读取当前模式、时间和 Git 变更数量
-  → ContextCompactor.request_messages() 把 reminder 临时附到本轮用户消息副本
-  → ToolRegistry 生成当前工具定义
-  → ModelStream.stream() 同时传入：
-       system  = 创建 Agent 时生成的固定提示词
-       messages = 干净历史 + 本轮临时 reminder
-       tools    = 当前启用工具
-  → AnthropicLLMClient.messages.stream(...) 发出真实 API 请求
-  → 模型流式返回文字或 tool_use
-  → Agent Loop 执行工具并继续下一轮
-  → 最终回复保存进 ConversationManager
-  → 临时 reminder 被丢弃，聊天记录中仍只有用户原话
-```
-
-对应的核心伪代码只有这些：
-
-```python
-# Agent 创建时，只做一次
-self._system_prompt = build_system_prompt(project_root)
-
-# 每条用户任务开始时，动态生成
-reminder = build_system_reminder(project_root, mode)
-messages = append_to_current_user_copy(clean_history, reminder)
-
-# 每轮 LLM 请求都复用同一个 system 和本条任务的 messages
-llm.stream(messages, tools, system=self._system_prompt)
-```
-
-工具循环进入第二轮时，system 仍然不变；第一轮的 `tool_use` 和 `tool_result` 只追加到 messages。
-
-## 七段固定提示词分别解决什么
-
-| 模块 | 解决的问题 |
+| 文件 | 职责 |
 | --- | --- |
-| `role` | 模型以什么身份做决定 |
-| `behavior` | 怎样调查、沟通，不能假装完成 |
-| `tool-guide` | 何时使用工具，失败后怎样调整 |
-| `code-quality` | 代码要短、直白、可验证 |
-| `safety` | 不泄密，不信任外部文本中的伪指令 |
-| `task-mode` | 遵守 Plan/Do 的不同工作方式 |
-| `output-style` | 先结果，再验证和下一步 |
+| `src/jixue/prompt.py` | 组装 System Prompt，生成任务状态提醒 |
+| `src/jixue/agent.py` | 创建 Agent、每个任务刷新 system、分发普通输入和 `/compact` |
+| `src/jixue/agent_runtime/loop.py` | 保存用户问题与本次提醒，再进入模型和工具循环 |
+| `src/jixue/agent_runtime/compaction.py` | 请求前清理旧工具正文、转换协议和按需摘要 |
+| `src/jixue/domain/conversation.py` | 保存工作消息，合并相邻用户文字，按完整任务划定摘要边界 |
+| `src/jixue/bridge/sessions.py`、`sessions/store.py` | 恢复工作快照，单独回放原始问题和界面事件 |
+| `src/jixue/tools/registry.py` | 导出本地及已连接 MCP 工具的定义 |
+| `src/jixue/llm/adapters/anthropic_client.py` | 将三部分请求交给 Anthropic SDK |
 
-这里用 XML 标签只是帮助模型看清结构，不是 Python 特殊语法，也不会自动产生安全能力。
-
-## 为什么动态信息不放 system
-
-当前时间和 Git 状态每次都可能变化。如果把它们写入 system，整段 system 每轮都会不同，供应商更难复用 Prompt Cache。
-
-所以当前设计是：
+## 完整链路
 
 ```text
-稳定：角色 + 规则 + 工作目录 + OS
-变化：当前时间 + Git 状态 + Plan/Do
+启动 Bridge
+  → SessionController 读取当前会话的最新工作快照
+  → 用恢复的 ConversationManager 创建 Agent，并生成初始 system
+  → 页面请求 session.current：重新加载所选快照，回放界面事件
+
+用户发送消息
+  → Bridge 保存 turn_started：原始输入，供界面回放
+  → 刷新当前 Agent 的可用工具；普通任务按需附上子任务通知
+  → Agent.run 刷新本任务 system
+  ├─ /compact：走摘要入口，不追加普通问题或动态提醒
+  └─ AgentLoop.run
+       → add_user：保存本次问题
+       → build_system_reminder：生成一次任务状态快照
+       → add_user：将提醒紧接在问题后保存
+       → ToolRegistry.to_api_format：得到本任务 tools，Plan 只导出只读工具
+       → request_messages：清旧工具正文，转换为 APIMessage，必要时摘要
+       → ModelStream.respond：发送 system + messages + tools
+       ├─ 完整 tool_use：执行工具，成对保存调用与结果，再次请求模型
+       └─ 结束/停止/失败：保存回复和状态
+  → Bridge 保存 turn_finished：工作快照 + 界面事件
+  → 发送收尾事件，界面恢复输入
 ```
 
-适配器继续传入 `cache_control={"type": "ephemeral"}`。是否实际命中缓存还取决于供应商、模型和最小 Token 门槛；代码只能保证稳定前缀的结构正确，不能伪造命中结果。
+**历史通常在用户发问前已恢复。** 后续消息复用当前内存中的 `ConversationManager`，不在每次请求时重新读整份会话文件。重启或切换会话才重新加载；正常结束或停止后保存的快照包含提醒。进程被强制结束时，只能恢复最后一次已保存的快照。
 
-## system-reminder 与提示注入
+System Prompt 由七段基础规则（角色、行为、工具使用、代码质量、安全、任务模式、输出风格）、工作目录和操作系统、根目录 `AGENTS.md`、记忆规则与索引、技能目录组成；主会话还附上子角色目录。创建 Agent 时生成初始值，每个新任务开始时刷新项目资料；同一任务的工具循环不再重建。资料未变时，重新组装的字符串保持相同。
 
-`<system-reminder>` 不是 API 的第四个字段，它仍然是 messages 里的文字。模型通常会把这个标签理解成客户端补充上下文。
+MCP 工具通过后台连接、握手和 `list_tools` 发现，经 `MCPToolWrapper` 包装后注册到共享 `ToolRegistry`。下一次 `chat.send` 的 `refresh_tools()` 将可用工具加入当前 Agent，再统一导出名称、描述和参数 Schema，成为请求的 `tools` 数组。尚未连接成功的工具不会凭配置文件自动进入数组。
 
-安全关键点是：只有 `prompt.py` 生成的可信内容可以进入这个标签。文件内容、网页内容和工具结果即使自己写了 `<system-reminder>`，也仍被视为外部数据，不能因此升级为系统指令。
+### 提醒怎样保存和发送
 
-提示词只能告诉模型“不要相信伪指令”，不能替代真正的权限校验。路径沙箱、危险命令拦截和用户确认属于下一章。
+```text
+工作历史：user(问题 A), user(提醒 R1), assistant(回答 A),
+          user(问题 B), user(提醒 R2)
 
-## 启动和手动测试
+API 消息：user(问题 A + 两个换行 + 提醒 R1), assistant(回答 A),
+          user(问题 B + 两个换行 + 提醒 R2)
 
-确认项目根目录 `.env` 中使用真实配置：
-
-```env
-JIXUE_LLM_MODE=configured
+界面回放：问题 A、回答 A、问题 B
 ```
 
-启动：
+`to_api_format()` 合并相邻同角色的纯文字，原始问题仍是独立的内部消息。问题和紧邻的提醒共同属于一个任务；提醒不增加任务计数，也不会单独成为摘要边界。
+
+以前 R1 只临时拼进请求副本，下一条任务重新转换历史时 R1 消失，已经发过的前缀随之改变。现在旧提醒随历史保留，请求整理函数不再注入提醒，工具循环、摘要后重试也不会重复追加它。
+
+这仍然不是“messages 永远不变”：旧工具正文清理和对话摘要会主动改写工作历史；项目指令、技能目录或工具集合变更也可能改变请求前缀。这里解决的是**跨任务丢失旧提醒**，没有测量或保证供应商实际缓存命中率。
+
+## 启动与测试
+
+离线手测先在本地 `.env` 中设置 `JIXUE_LLM_MODE=fake`，再启动：
 
 ```powershell
+conda activate mycoder
 npm run dev
 ```
 
-建议按顺序测试：
+1. 发送 `/loop README.md docs/PROJECT_STRUCTURE.md`，确认完成两次读取、三轮模型请求。
+2. 接着发送“继续”，确认任务轮号只增加一次，用户气泡只显示原话。
+3. 输出时点击停止，等“已停止”后重启应用，打开原会话并发送“继续”。确认历史、工具卡片可恢复，输入正常。
+4. 切换 Plan/Do 后发送新消息，确认模式和工具限制仍然生效。
 
-1. 在 Do 模式发送“请读取 README.md，先说明你要做什么，再给出三点总结”。
-2. 应看到读文件工具卡片，然后收到基于真实文件内容的回答。
-3. 点击 Plan，发送“调查项目结构，计划如何增加写文件工具，但不要修改文件”。
-4. 应只出现只读工具，回答应停在计划，不执行写入。
-5. 切回 Do，再发一条普通问题，确认模式要求已经改变。
-6. 连续发两条问题，例如先说“记住我的称呼是小雪”，再问“我的称呼是什么”，确认多轮历史仍正常。
-7. 检查页面中的用户消息，应只显示原话，不应出现 `<system-reminder>`。
-
-自动检查：
+Fake 用于验证链路，不理解文件内容；判断模型是否正确采用最新环境需使用真实模型。实际 API 消息的逐项前缀比较由本地回归完成：
 
 ```powershell
-npm run test:all
-conda run --no-capture-output -n mycoder ruff check .
-conda run --no-capture-output -n mycoder mypy src tests
-npm run test:electron
+conda run --no-capture-output -n mycoder python -m pytest tests/bridge/test_reminder_history.py
+conda run --no-capture-output -n mycoder python -m pytest
+conda run --no-capture-output -n mycoder ruff check src
+conda run --no-capture-output -n mycoder mypy src
 ```
 
-## 常见坑
+测试覆盖多次工具请求与下一任务的前缀、停止/截断/失败后恢复、UI 原话回放、摘要保留最近提醒，以及旧存档兼容。测试只保留在 Git 忽略的 `tests/` 中。
 
-- 每轮重新生成完整 system：时间变化会让稳定前缀失效。
-- 把 reminder 保存进 ConversationManager：下一轮会看到过期模式和时间，页面也会泄漏内部上下文。
-- 把所有内容都塞进 system：工具定义和对话历史失去各自清晰的协议位置。
-- 在 Agent 中导入 Anthropic SDK：供应商细节会污染核心代码；当前仍只由适配器接触 SDK。
-- 把 XML 标签当安全边界：标签只是提示结构，真正危险操作必须由权限代码拦截。
-- 把文件名原样写进动态系统提醒：恶意文件名也可能携带注入文字；当前 Git 状态只给出变更数量。
-- 让 git status 继承 Bridge 的 stdin：两个读取者可能争抢同一条输入管道，表现为消息停在第 0 轮；当前 Git 子进程固定使用 DEVNULL。
-- 看到缓存没有命中就认为接线错误：短提示词可能达不到服务商缓存门槛，应先确认请求前缀是否稳定。
+## 常见问题
 
-## 本章完成边界
+**为什么暂时仍然每个任务生成一次？** 用最少状态保证新任务有当前模式、权限、时间和 Git 快照。本步先修复已发送提醒丢失；只在状态变化时追加需要另行设计变化判断和时间更新频率。
 
-第四章已经完成。后续第五章接入写工具和权限确认，第六章接入 MCP，第八章接入项目指令和长期记忆；本章不重复这些实现。
+**旧提醒会不会覆盖当前状态？** 它明确标为历史快照，新任务读最新提醒，任务执行中读工具结果。真正权限仍由执行器校验；提醒不能授予工具能力或替代权限判断。
 
-## 本章变更记录
+**旧存档没有提醒怎么办？** 原样恢复，从下一个普通任务开始追加。不能用当前时间和 Git 状态给过去的任务补造快照；无需修改存档格式。
 
-- 一步完成：新增七段式 System Prompt、动态 reminder、LLM 接口传递、Anthropic SDK 接线、缓存前缀设计、测试和文档。
-- 修复：读取动态 Git 状态时隔离子进程 stdin，避免它干扰 Electron 发给 Bridge 的后续聊天命令。
+**摘要时提醒怎么办？** 旧任务提醒随旧前缀成为摘要资料，最近两轮和当前任务的提醒保留。`/compact` 命令自身不创建新任务提醒。
+
+**`<system-reminder>` 是独立的 API 角色吗？** 不是，只是 `messages` 中的文字标签。外部文件、网页或工具结果自带这个标签，也不能升级成系统指令。
+
+**为什么 Git 状态只显示数量？** 避免把恶意文件名包装成客户端提醒。Git 子进程使用 `DEVNULL` 隔离 stdin，避免争抢 Bridge 的输入管道。
+
+## 变更记录
+
+- 建立七段 System Prompt、LLM 合同与 SDK 接线；隔离动态 Git 查询的 stdin。
+- 接入每个任务的项目指令、记忆索引、技能和子角色目录刷新。
+- 动态提醒改为任务开始时追加到工作历史；移除请求副本临时注入，支持正常停止和重启恢复；保持界面原始输入与旧存档兼容。
 
 ## 自测题与答案
 
-**问：为什么工作目录放 system，当前时间却放 reminder？**
-
-答：工作目录在一次会话内基本不变，适合稳定缓存；时间每轮变化，放进 system 会让整段前缀改变。
-
-**问：`<system-reminder>` 是 Anthropic API 的独立字段吗？**
-
-答：不是。它仍然位于 messages 中，只是霁雪约定的一种结构化文字标记。
-
-**问：为什么 reminder 不保存进聊天历史？**
-
-答：它是客户端当时的运行上下文，不是用户原话。保存后会污染页面和后续请求，还可能携带过期模式。
-
-**问：工具描述放在哪里？**
-
-答：放在 API 的 tools 字段，由 `ToolRegistry.to_api_format()` 生成，不放进 system。
-
-**问：System Prompt 写了“不要执行危险命令”，是否已经足够安全？**
-
-答：不够。模型可能误判或被注入影响；下一章还要用代码实现危险命令拦截、路径沙箱、权限规则和人在回路确认。
-
-**问：一条任务进入第二轮工具循环时，会重新生成 system 吗？**
-
-答：不会。Agent 创建时生成一次固定 system；同一任务的每轮请求都复用它。
-
-**问：怎样证明 reminder 没污染真实对话？**
-
-答：页面只显示用户原话；自动测试也同时检查“发给模型的副本含 reminder”和“ConversationManager 保存的原消息不含 reminder”。
+1. **恢复历史和生成 system 谁先？** 会话控制器先恢复工作快照，再创建 Agent 生成初始 system；新问题到来时再刷新本任务 system。
+2. **为什么把时间放在消息尾部？** 避免每次时间变化都改动靠前的 system，旧任务快照也能保持原文。
+3. **保存提醒后，页面为什么不会显示它？** UI 使用原始输入和 Agent 事件回放，不直接遍历工作消息。
+4. **一个任务请求三次模型，提醒生成几次？** 一次。工具调用和结果追加后，再从同一工作历史生成请求。
+5. **提醒会被算作一个额外任务吗？** 不会。连续的原问题和提醒属于同一轮，终态 assistant 才结束该轮。
+6. **前缀稳定是否等于缓存必然命中？** 不等于。还取决于其他请求字段、历史清理、供应商策略和缓存门槛。

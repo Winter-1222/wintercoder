@@ -101,6 +101,9 @@ class AgentLoop:
                     self._control.mode.value,
                     self._control.permission_mode.value,
                 )
+            if reminder:
+                # 提醒随工作历史保存；相邻 user 在协议转换时合并，界面仍使用原始输入事件。
+                self._conversation.add_user(reminder)
             tools = (
                 self._tool_definitions
                 if self._tool_definitions is not None
@@ -115,7 +118,7 @@ class AgentLoop:
                 response_saved = False
                 try:
                     async for item in self._respond(
-                        reminder, tools, response, attempts, task_usage, message_id,
+                        tools, response, attempts, task_usage, message_id,
                     ):
                         yield item
                 finally:
@@ -217,7 +220,6 @@ class AgentLoop:
 
     async def _respond(
         self,
-        reminder: str,
         tools: Sequence[ToolDefinition],
         response: ModelResponse,
         attempts: RequestAttempts,
@@ -226,7 +228,7 @@ class AgentLoop:
     ) -> AsyncIterator[AgentEvent]:
         """请求前检查预算；供应商拒绝超长时，摘要后只重试一次。"""
 
-        messages = self._compactor.request_messages(reminder)
+        messages = self._compactor.request_messages()
         if (
             not attempts.auto_compaction_attempted
             and not self._compactor.paused
@@ -239,7 +241,7 @@ class AgentLoop:
             if cancelled:
                 return
             if compacted:
-                messages = self._compactor.request_messages(reminder)
+                messages = self._compactor.request_messages()
         while True:
             try:
                 async for item in self._model.respond(
@@ -268,7 +270,7 @@ class AgentLoop:
                     return
                 if not compacted:
                     raise
-                messages = self._compactor.request_messages(reminder)
+                messages = self._compactor.request_messages()
 
     def _compaction_usage_event(self, usage: Usage, task_usage: Usage) -> AgentEvent:
         """摘要已计入会话账单，当前任务尚未入账的模型费用也要包含在累计值中。"""

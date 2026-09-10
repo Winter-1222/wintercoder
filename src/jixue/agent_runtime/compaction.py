@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator
 from time import perf_counter
 from uuid import uuid4
 
@@ -53,13 +53,12 @@ class ContextCompactor:
     def paused(self) -> bool:
         return self._consecutive_failures >= AUTO_COMPACTION_FAILURE_LIMIT
 
-    def request_messages(self, reminder: str) -> list[APIMessage]:
-        """唯一请求入口：清理会话，再给当前问题附上本次动态提醒。"""
+    def request_messages(self) -> list[APIMessage]:
+        """唯一请求入口：清理会话并转换协议，复用历史里已经保存的提醒。"""
 
         clear_old_tool_results(self._conversation)
-        return _messages_with_reminder(
-            self._conversation.to_api_format(merge_text=not self._preserve_message_boundary),
-            reminder,
+        return self._conversation.to_api_format(
+            merge_text=not self._preserve_message_boundary,
         )
 
     async def run_manual(self) -> AsyncIterator[AgentEvent]:
@@ -237,21 +236,3 @@ class ContextCompactor:
             turn_index=self._conversation.completed_turns + 1,
             cancelled=cancelled,
         )
-
-
-def _messages_with_reminder(
-    messages: Sequence[APIMessage],
-    reminder: str,
-) -> list[APIMessage]:
-    """把客户端提醒附到当前问题副本，不污染真正保存的用户消息。"""
-
-    result = list(messages)
-    if not reminder:
-        return result
-    # 当前用户问题一定是最后一条字符串 user 消息；倒序查找可避开工具结果块。
-    for index in range(len(result) - 1, -1, -1):
-        message = result[index]
-        if message.role == "user" and isinstance(message.content, str):
-            result[index] = APIMessage("user", f"{message.content}\n\n{reminder}")
-            break
-    return result

@@ -243,7 +243,7 @@ def _to_api_messages(messages: Sequence[Message], *, merge_text: bool = True) ->
 
 
 def _complete_turn_starts(messages: Sequence[Message]) -> list[int]:
-    """普通 user 开始一轮，终态 assistant 结束一轮；停止不等于任务成功。"""
+    """原问题和紧邻的 user 提醒属于同一轮；终态 assistant 结束该轮。"""
 
     starts: list[int] = []
     start: int | None = None

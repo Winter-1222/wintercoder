@@ -27,14 +27,14 @@ myAgent/
 | --- | --- |
 | `src/jixue/agent.py` | 唯一组装与对外入口：显式连接运行控制、模型流、工具执行、压缩器和循环，分发普通任务与 `/compact` |
 | `src/jixue/agent_runtime/__init__.py` | Agent 内部运行组件包；不反向导入组装入口 |
-| `src/jixue/agent_runtime/loop.py` | 普通任务循环：请求模型、执行工具、成对写回事实；区分完成/未完成/失败/停止，保留中断续接信息；控制自动摘要和超长单次重试 |
+| `src/jixue/agent_runtime/loop.py` | 普通任务循环：保存问题与本次动态提醒，请求模型、执行工具、成对写回事实；区分完成/未完成/失败/停止，保留中断续接信息；控制自动摘要和超长单次重试 |
 | `src/jixue/agent_runtime/model.py` | 可取消模型流，逐次响应收集与正文、工具、用量事件转换；不执行工具或决定压缩 |
 | `src/jixue/agent_runtime/execution.py` | 工具参数与权限检查、确认等待、安全分批并发、结果落盘；取消时区分已完成、未执行和结果未知，补齐配对结果 |
-| `src/jixue/agent_runtime/compaction.py` | 请求消息整理、动态提醒、手动/自动摘要共用事务，以及连续失败暂停 |
+| `src/jixue/agent_runtime/compaction.py` | 清理并转换已含历史提醒的请求消息、手动/自动摘要共用事务，以及连续失败暂停 |
 | `src/jixue/agent_runtime/control.py` | 运行状态、Plan/Do、权限模式、统一取消信号及一次性权限回复 |
 | `src/jixue/agent_runtime/events.py` | Agent 事件合同与公共事件构造，不持有会话或执行组件 |
 | `src/jixue/context.py` | 三层上下文策略：大结果落盘、成轮清理旧工具正文、摘要触发与资料文字转换；无独立活动状态 |
-| `src/jixue/prompt.py` | 拼装基础 System Prompt、项目指令、记忆与技能目录，以及每轮模式、时间和 Git 动态提醒 |
+| `src/jixue/prompt.py` | 拼装基础 System Prompt、项目指令、记忆与技能目录，以及每个任务开始时的模式、权限、时间和 Git 状态快照 |
 | `src/jixue/skills.py` | 发现技能元信息、校验入口、按需读正文和生成有界目录；不执行脚本 |
 | `src/jixue/tools/skill.py` | load_skill 只读工具；通过原有执行器加载 SKILL.md 正文 |
 | `src/jixue/project_context.py` | 有界读取根目录 AGENTS.md，拒绝指向项目外的路径 |
@@ -50,7 +50,7 @@ myAgent/
 | `src/jixue/subagents/store.py` | 安全路径、有界快照、原子写入和恢复校验 |
 | `src/jixue/tools/subagent.py` | 唯一 Agent 工具的稳定 Schema 与参数校验 |
 | `src/jixue/permission.py` | 权限判断核心：危险命令、路径沙箱、精确安全规则、三种权限模式和 ALLOW/DENY/ASK 结果 |
-| `src/jixue/domain/conversation.py` | 唯一工作消息序列，包含文字、工具块和摘要；负责协议转换、中断状态说明、大小估算、原子替换及独立用量和已结束轮次计数 |
+| `src/jixue/domain/conversation.py` | 唯一工作消息序列，包含用户文字、客户端提醒、工具块和摘要；负责协议转换、中断状态说明、大小估算、原子替换及独立用量和已结束轮次计数 |
 | `src/jixue/domain/events.py` | Electron 与 Python 之间的一行 JSON 信封 |
 | `src/jixue/llm/base.py` | 霁雪自己的 LLM 接口；统一接收 system、messages、tools 并输出流事件 |
 | `src/jixue/llm/fake.py` | 离线模拟 LLM；支持工具闭环、权限、摘要和 /skill 两种技能演示，工具 ID 在跨任务时保持唯一 |
@@ -110,7 +110,7 @@ myAgent/
 | `docs/chapters/01-llm-ui/README.md` | 第一章代码和完整消息链路 |
 | `docs/chapters/02-tools/README.md` | 第二章工具底座和执行链路 |
 | `docs/chapters/03-agent-loop/README.md` | 第三章 Agent 核心、循环步骤和手测记录 |
-| `docs/chapters/04-system-prompt/README.md` | 第四章提示词分层、完整请求链路和手测说明 |
+| `docs/chapters/04-system-prompt/README.md` | 第四章提示词分层、提醒保存与恢复、完整请求链路和手测说明 |
 | `docs/chapters/05-permissions/README.md` | 第五章权限防线、判断链路和分步进度 |
 | `docs/chapters/06-mcp/README.md` | 第六章 MCP 连接、工具包装、完整调用链和手测说明 |
 | `docs/chapters/07-context/README.md` | 第七章统一 messages、三层上下文保护、Claude Code 公开机制对照及启动和测试说明 |
@@ -122,6 +122,8 @@ myAgent/
 | `skills/inspect-python/references/report-guide.md` | Python 概览统计字段、范围限制和推断边界 |
 | `skills/inspect-python/scripts/inspect_python.py` | 项目内 Python AST 静态统计脚本，无第三方依赖、不执行目标代码 |
 | `scripts/test-all.ps1` | 顺序执行本地自动化检查 |
+
+本地 `tests/bridge/test_reminder_history.py` 验证实际请求前缀、提醒存盘恢复、UI 原话回放、停止续接、旧存档和摘要边界。
 
 本地 `tests/mcp/demo_server.py` 和 `demo_http_server.py` 分别模拟 stdio 与 HTTP
 Server；对应测试覆盖两条真实闭环。每章目录只允许有一个 `README.md`；这些测试

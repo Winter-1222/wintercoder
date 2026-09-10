@@ -53,7 +53,7 @@
 
 ### 2. 选择初始上下文，再组装同一种 Agent
 
-父模型请求发送前，ModelStream 记录已经清理、附加动态提醒后的实际输入：
+父模型请求发送前，ModelStream 记录已包含历史提醒、完成清理和协议转换的实际输入：
 
 ```python
 self.last_request = RequestSnapshot(

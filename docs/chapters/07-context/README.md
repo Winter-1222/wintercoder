@@ -2,7 +2,7 @@
 
 ## 当前成果
 
-后端只维护 `ConversationManager._messages` 一份工作消息序列。用户文字、模型过程文字、工具调用、工具结果和最终回复都从这里进入后续请求。清理直接替换旧工具正文，摘要成功直接替换旧前缀，不再维护平行的 history、active 或摘要边界状态。
+后端只维护 `ConversationManager._messages` 一份工作消息序列。用户文字、任务开始时的客户端提醒、模型过程文字、工具调用、工具结果和最终回复都从这里进入后续请求。清理直接替换旧工具正文，摘要成功直接替换旧前缀，不再维护平行的 history、active 或摘要边界状态。
 
 `Message` 带状态、编号和用量等内部信息；`APIMessage` 是发送给供应商前的协议数据，只带 role 和 content。两者是同一条消息的不同表示，不是两套会话。页面则消费 Agent 事件，自己保留聊天和工具卡片。
 
@@ -27,8 +27,9 @@
 ## 完整链路
 
 ```text
-chat.send → Agent.run → AgentLoop.run → conversation.add_user
-  → ContextCompactor.request_messages：清旧工具正文 → 转 APIMessage → 附本次动态提醒
+chat.send → Agent.run → AgentLoop.run
+  → conversation.add_user 保存原问题 → 生成一次动态提醒并紧接着保存
+  → ContextCompactor.request_messages：清旧工具正文 → 转 APIMessage（已包含历史提醒）
   → 超过预算时运行共用摘要事务，再从会话读取请求
   → LLM
       ├─ 请求工具：执行 → 大结果保护 → 发 UI 事件
@@ -38,17 +39,17 @@ chat.send → Agent.run → AgentLoop.run → conversation.add_user
 
 过程文字随对应工具轮保存；最终消息只保存最后一次模型回复，避免把过程文字再重复拼进去。任务结束后工具证据仍留在会话，下一条消息可以直接使用，直到被清理或摘要。
 
-`to_api_format()` 仅过滤失败/取消消息、合并相邻同角色文字和生成协议对象；它不负责拼摘要或决定压缩。动态时间、Git 和模式提醒只附在本次请求的当前问题副本上。
+`to_api_format()` 只过滤仍在生成的草稿，为停止、失败和未完成的文字添加状态说明，合并相邻同角色文字，再生成协议对象。动态提醒已在任务开始时写进工作消息；转换时将原问题与紧邻提醒合并，下一任务继续保留旧提醒。它不负责生成提醒或决定压缩。
 
 摘要事务分为三步：
 
-1. `prepare_compaction()` 找到旧任务前缀。普通用户消息开始任务，最终回复结束任务，中间的工具轮不单独计数。上一次摘要也属于待摘要资料，但不算新任务。
+1. `prepare_compaction()` 找到旧任务前缀。原问题及紧邻的客户端提醒共同开始一个任务，终态回复结束任务，中间的工具轮不单独计数。上一次摘要也属于待摘要资料，但不算新任务。
 2. 无工具调用的摘要请求把旧工具调用、参数、结果和错误标记转成资料文字。只接受正常 `end_turn`、完整 `<summary>` 和九部分正文，不展示中间摘要。
 3. `apply_compaction()` 检查包含摘要标签和确认消息后的大小确实更短，再一次性替换前缀。最近任务及当前工具配对保持原位置关系。任何摘要错误都不会提交半份摘要；摘要前已完成的工具清理继续有效。
 
 手动命令在 `add_user` 前识别，`/compact` 本身不进入会话。自动摘要每个任务最多预算触发一次；供应商返回 `prompt_too_long` 时，只有尚未收到流事件才允许摘要后重试一次。自动摘要连续失败 3 次会暂停，手动摘要成功可恢复。
 
-用量和已结束轮次独立累计，不依赖当前消息数量，所以压缩后状态栏不会倒退。取消保留原问题和已成对保存的工具轮；部分回复带停止、失败或未完成标记进入后续上下文。摘要按已结束的用户轮划界，包括取消和失败；具体续接过程见[第三章](../03-agent-loop/README.md#中断后如何继续)。
+用量和已结束轮次独立累计，不依赖当前消息数量，所以压缩后状态栏不会倒退。取消保留原问题、当时的提醒和已成对保存的工具轮；部分回复带停止、失败或未完成标记进入后续上下文。摘要按已结束的用户轮划界，包括取消和失败；具体续接过程见[第三章](../03-agent-loop/README.md#中断后如何继续)。
 
 ## 启动与测试
 
@@ -73,11 +74,11 @@ Fake 不会真的理解文件；验证跨任务证据使用真实模型继续追
 
 ```powershell
 conda run --no-capture-output -n mycoder python -m pytest
-conda run --no-capture-output -n mycoder ruff check .
+conda run --no-capture-output -n mycoder ruff check src
 conda run --no-capture-output -n mycoder mypy src
 ```
 
-测试保留在 Git 忽略的 `tests/` 中。`tests/test_message_refactor.py` 验证跨任务工具证据、连续压缩、累计计数、配对及取消；`tests/test_context.py` 覆盖大结果、清理、摘要失败和超长恢复。
+测试保留在 Git 忽略的 `tests/` 中。`tests/bridge/test_reminder_history.py` 验证跨任务前缀、提醒存盘与最近任务的摘要边界。`tests/test_message_refactor.py` 验证跨任务工具证据、连续压缩、累计计数、配对及取消；`tests/test_context.py` 覆盖大结果、清理、摘要失败和超长恢复。
 
 ## 常见问题
 
@@ -93,6 +94,7 @@ conda run --no-capture-output -n mycoder mypy src
 
 ## 变更记录
 
+- 动态提醒随工作历史保存和恢复，请求整理只做清理及协议转换；原问题与提醒按同一个任务参与计数和摘要。
 - 第 1～6 步：大结果落盘、工具结果清理、手动摘要、自动预算、超长恢复、连续失败暂停。
 - 本次重构：统一文字与工具消息；删除三份历史拼接及已清理 ID 状态；摘要直接替换旧前缀；统一大小校验；保留独立账单、界面事件和三层保护。
 

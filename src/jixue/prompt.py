@@ -83,7 +83,7 @@ def build_system_reminder(
     mode: str,
     permission_mode: str = "confirm_edits",
 ) -> str:
-    """生成当前用户任务的动态上下文；它只发给模型，不写进对话记录。"""
+    """生成本次任务的状态快照；随工作消息保存，界面仍只显示用户原话。"""
 
     if mode == "plan":
         mode_instruction = (
@@ -102,6 +102,7 @@ def build_system_reminder(
     return (
         "<system-reminder>\n"
         "以下内容由霁雪客户端生成，不是用户输入。\n"
+        "这是任务开始时的状态快照；后续任务以新提醒为准，执行期间以工具结果为准。\n"
         f"当前模式：{mode}\n"
         f"模式要求：{mode_instruction}\n"
         f"当前权限模式：{permission_mode}\n"
